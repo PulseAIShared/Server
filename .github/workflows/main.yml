@@ -40,7 +40,6 @@ jobs:
           
           echo "Generated SSL certificate for IP: ${DROPLET_IP}"
       
-      
       # Step 5: Prepare Nginx files
       - name: Prepare Nginx files
         run: |
@@ -280,7 +279,7 @@ jobs:
         with:
           host: ${{ secrets.DIGITALOCEAN_DROPLET_IP }}
           username: root
-          key: ${{ secrets.DROPLET_SSH_KEY }}
+          password: ${{ secrets.DROPLET_PASSWORD }}  # Use password instead of key
           port: 22
           source: "./docker-compose.deploy.yml,./.env"
           target: "/opt/pulseai/"
@@ -292,7 +291,7 @@ jobs:
         with:
           host: ${{ secrets.DIGITALOCEAN_DROPLET_IP }}
           username: root
-          key: ${{ secrets.DROPLET_SSH_KEY }}
+          password: ${{ secrets.DROPLET_PASSWORD }}  # Use password instead of key
           port: 22
           script: |
             cd /opt/pulseai
