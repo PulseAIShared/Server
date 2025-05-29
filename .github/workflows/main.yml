@@ -40,7 +40,6 @@ jobs:
           
           echo "Generated SSL certificate for IP: ${DROPLET_IP}"
       
-      
       # Step 5: Prepare Nginx files
       - name: Prepare Nginx files
         run: |
@@ -274,27 +273,39 @@ jobs:
           JWT_SECRET=${{ secrets.JWT_SECRET }}
           EOL
       
-      # Step 10: Upload files to Droplet
-      - name: Upload files to Droplet
-        uses: appleboy/scp-action@v0.1.5
-        with:
-          host: ${{ secrets.DIGITALOCEAN_DROPLET_IP }}
-          username: root
-          key: ${{ secrets.DROPLET_SSH_KEY }}
-          port: 22
-          source: "./docker-compose.deploy.yml,./.env"
-          target: "/opt/pulseai/"
-          overwrite: true
-      
-      # Step 11: Deploy to Droplet via SSH
-      - name: Deploy to Droplet
-        uses: appleboy/ssh-action@v0.1.6
-        with:
-          host: ${{ secrets.DIGITALOCEAN_DROPLET_IP }}
-          username: root
-          key: ${{ secrets.DROPLET_SSH_KEY }}
-          port: 22
-          script: |
+      # Step 10: Setup SSH and Deploy to Droplet
+      - name: Setup SSH and Deploy
+        run: |
+          # Create SSH directory
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          
+          # Write SSH private key to file
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          
+          # Add droplet to known hosts
+          ssh-keyscan -H ${{ secrets.DIGITALOCEAN_DROPLET_IP }} >> ~/.ssh/known_hosts 2>/dev/null
+          
+          # Test SSH connection first
+          echo "Testing SSH connection..."
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no -o ConnectTimeout=30 \
+            root@${{ secrets.DIGITALOCEAN_DROPLET_IP }} "echo 'SSH connection successful'"
+          
+          # Create directory on server
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
+            root@${{ secrets.DIGITALOCEAN_DROPLET_IP }} "mkdir -p /opt/pulseai"
+          
+          # Upload files
+          echo "Uploading files..."
+          scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
+            docker-compose.deploy.yml .env \
+            root@${{ secrets.DIGITALOCEAN_DROPLET_IP }}:/opt/pulseai/
+          
+          # Deploy
+          echo "Deploying application..."
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
+            root@${{ secrets.DIGITALOCEAN_DROPLET_IP }} << 'EOF'
             cd /opt/pulseai
             
             # Backup current deployment
@@ -305,6 +316,15 @@ jobs:
             # Update deployment files
             mv docker-compose.deploy.yml docker-compose.yml
             
+            # Install Docker and Docker Compose if not present
+            if ! command -v docker &> /dev/null; then
+              echo "Installing Docker..."
+              curl -fsSL https://get.docker.com -o get-docker.sh
+              sh get-docker.sh
+              systemctl start docker
+              systemctl enable docker
+            fi
+            
             # Pull latest images
             docker compose pull
             
@@ -314,7 +334,7 @@ jobs:
             # Start new deployment
             docker compose up -d
             
-            # Wait for services to be healthy
+            # Wait for services to start
             echo "Waiting for services to start..."
             sleep 30
             
@@ -326,19 +346,16 @@ jobs:
             
             # Show logs for debugging
             docker compose logs --tail=50
+          EOF
       
-      # Step 12: Optional - Set up certificate auto-renewal
+      # Step 11: Optional - Set up certificate auto-renewal
       - name: Setup certificate renewal (Optional)
         if: false  # Set to true to enable
-        uses: appleboy/ssh-action@v0.1.6
-        with:
-          host: ${{ secrets.DIGITALOCEAN_DROPLET_IP }}
-          username: root
-          key: ${{ secrets.DROPLET_SSH_KEY }}
-          port: 22
-          script: |
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
+            root@${{ secrets.DIGITALOCEAN_DROPLET_IP }} << 'EOF'
             # Create renewal script
-            cat > /opt/pulseai/renew-certs.sh << 'EOF'
+            cat > /opt/pulseai/renew-certs.sh << 'SCRIPT_EOF'
             #!/bin/bash
             cd /opt/pulseai
             
@@ -352,9 +369,10 @@ jobs:
             if [ $? -eq 0 ]; then
               docker compose exec nginx nginx -s reload
             fi
-            EOF
+          SCRIPT_EOF
             
             chmod +x /opt/pulseai/renew-certs.sh
             
             # Add to crontab (run twice daily)
             (crontab -l 2>/dev/null; echo "0 2,14 * * * /opt/pulseai/renew-certs.sh") | crontab -
+          EOF
