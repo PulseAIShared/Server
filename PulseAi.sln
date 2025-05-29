@@ -13,13 +13,13 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Domain", "Domain\Domain.csp
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Web.Api", "Web.Api\Web.Api.csproj", "{EF380AE5-9296-86D2-850D-67277842E67F}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DataTransferObjects", "Contracts\DataTransferObjects.csproj", "{3379E93E-68DE-4B68-9215-8EB1687A5D81}"
-EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Solutions", "Solutions", "{02EA681E-C7D8-13C7-8484-4AC65E1B71E8}"
 	ProjectSection(SolutionItems) = preProject
 		docker-compose.yml = docker-compose.yml
 		.github\workflows\main.yml = .github\workflows\main.yml
 	EndProjectSection
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DataTransferObjects", "DataTransferObjects\DataTransferObjects.csproj", "{6F7A522C-DE63-457E-EC03-E9B4A68A54F8}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -47,10 +47,10 @@ Global
 		{EF380AE5-9296-86D2-850D-67277842E67F}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{EF380AE5-9296-86D2-850D-67277842E67F}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{EF380AE5-9296-86D2-850D-67277842E67F}.Release|Any CPU.Build.0 = Release|Any CPU
-		{3379E93E-68DE-4B68-9215-8EB1687A5D81}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{3379E93E-68DE-4B68-9215-8EB1687A5D81}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{3379E93E-68DE-4B68-9215-8EB1687A5D81}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{3379E93E-68DE-4B68-9215-8EB1687A5D81}.Release|Any CPU.Build.0 = Release|Any CPU
+		{6F7A522C-DE63-457E-EC03-E9B4A68A54F8}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{6F7A522C-DE63-457E-EC03-E9B4A68A54F8}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{6F7A522C-DE63-457E-EC03-E9B4A68A54F8}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{6F7A522C-DE63-457E-EC03-E9B4A68A54F8}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
