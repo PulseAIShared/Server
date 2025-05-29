@@ -1,4 +1,4 @@
-version: '3.8'
+
 services:
   api:
     build:
@@ -49,4 +49,4 @@ services:
 volumes:
   postgres_data:
 networks:
-  bodyledger-network:
+  pulseai-network:

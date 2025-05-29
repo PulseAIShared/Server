@@ -4,6 +4,7 @@ using Application.Users.GetById;
 using DataTransferObjects.Users.Responses;
 using Domain.Users;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Caching.Memory;
 using SharedKernel;
 using System.Reflection;
@@ -18,16 +19,14 @@ internal sealed class Authenticate : IEndpoint
     {
         app.MapGet("users/me", async (
             HttpContext httpContext,
-            Guid userId,
-            ICommandHandler<RefreshTokenCommand, RefreshTokenWithUserResponse> commandHandler,
-            IQueryHandler<GetUserByIdQuery, UserResponse> queryHandler,
-            IMemoryCache cache,
+            [FromServices] ICommandHandler<RefreshTokenCommand, RefreshTokenWithUserResponse> commandHandler,
+            [FromServices] IQueryHandler<GetUserByIdQuery, UserResponse> queryHandler,
+            [FromServices] IMemoryCache cache,
             CancellationToken cancellationToken) =>
         {
             if (httpContext.User.Identity?.IsAuthenticated == true)
             {
-                Guid parsedUserId;
-                if (!Guid.TryParse(httpContext.User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value, out parsedUserId))
+                if (!Guid.TryParse(httpContext.User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value, out Guid parsedUserId))
                 {
                     return Results.Unauthorized();
                 }
@@ -72,4 +71,3 @@ internal sealed class Authenticate : IEndpoint
         .WithTags(Tags.Users);
     }
 }
-

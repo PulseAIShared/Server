@@ -49,6 +49,7 @@ app.UseAuthorization();
 
 await app.RunAsync();
 
+//dotnet ef migrations add modelupdate --project Infrastructure --startup-project Web.Api
 namespace Web.Api
 {
     public partial class Program;

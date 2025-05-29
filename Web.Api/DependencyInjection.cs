@@ -24,7 +24,7 @@ public static class DependencyInjection
 
                 options.AddPolicy("Production", policy =>
                 {
-                    policy.WithOrigins("https://trackspace.pro", "https://bodyledger.netlify.app")
+                    policy.WithOrigins("https://pulseretention.netlify.app")
                           .AllowAnyHeader()
                           .AllowAnyMethod()
                           .AllowCredentials();
