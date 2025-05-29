@@ -22,6 +22,20 @@ builder.Services.AddEndpoints(Assembly.GetExecutingAssembly());
 
 WebApplication app = builder.Build();
 
+
+if (app.Environment.IsDevelopment())
+{
+    app.UseCors("Development");
+    app.UseSwaggerWithUi();
+    app.ApplyMigrations();
+}
+else
+{
+    app.UseCors("Production");
+    app.UseSwaggerWithUi();
+    app.ApplyMigrations();
+}
+
 app.MapEndpoints();
 
 if (app.Environment.IsDevelopment())
