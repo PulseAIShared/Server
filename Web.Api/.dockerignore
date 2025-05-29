@@ -1,0 +1,25 @@
+# Ignore Visual Studio files and folders
+.vs/
+*.csproj.user
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Ignore build outputs
+bin/
+obj/
+
+# Ignore other temporary files
+*.log
+*.temp
+*.tmp
+*.pid
+*.tar.gz
+*.swp
+
+# Ignore specific files that should not be included
+Web.Api/.vs/
+Infrastructure/.vs/
+Domain/.vs/
+Application/.vs/

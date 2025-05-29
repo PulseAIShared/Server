@@ -1,0 +1,52 @@
+version: '3.8'
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Web.Api/Dockerfile
+    image: smains/pulseai:latest
+    depends_on:
+      - db
+    expose:
+      - "5000"
+    environment:
+      ASPNETCORE_ENVIRONMENT: "Production"
+      ConnectionStrings__Database: "Host=db;Port=5432;Database=pulseai;Username=postgres;Password=H&yjs)2AAbHR&6yF"
+      Jwt__Secret: "0fbdba239cd4ef0b39fd3bcb48585a302fcdc82a4a76b48389f1ed3184203c820b1bad632c451b30d6c12f4ab50d15a31c6d9a954c39483a680c95792e19ce9f185e5b26394f167a3b4f96faea585f977fcc688564b94a7677aa2b8a38a53ba6c88cdb90417354ac5c49cba5ede6a052ebf32aea58cea8e4f4514822ce5b2b5922d4c0da7d3ad74fc2f5f10b7bd868c28b75e1bdb0a34a32827dfa055c4087af3322940f6037154d2881be397cf2bcaf96e18db5256b93d686ef021a8417ff69c4107aa38ca716a13f5737e1475a74e9a271f16730603f66dfc404d3a6707469bcb3d159e72de91b8ec48680c44612ec0526d752df7e73d464fec8f3fe2c23fe"
+      Jwt__Issuer: "pulseai-api"
+      Jwt__Audience: "pulseai-clients"
+    networks:
+      - pulseai-network
+    restart: always
+
+  nginx:
+    image: nginx:latest
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf
+      - ./ssl:/etc/nginx/ssl
+    depends_on:
+      - api
+    networks:
+      - pulseai-network
+    restart: always
+
+  db:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: H&yjs)2AAbHR&6yF
+      POSTGRES_DB: pulseai
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"  
+    networks:
+      - pulseai-network
+volumes:
+  postgres_data:
+networks:
+  bodyledger-network:
