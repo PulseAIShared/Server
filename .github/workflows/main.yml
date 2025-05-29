@@ -2,7 +2,7 @@ name: CI/CD Pipeline with Auto SSL
 on:
   push:
     branches:
-      - main
+      - master
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
@@ -39,6 +39,42 @@ jobs:
             -addext "subjectAltName=IP:${DROPLET_IP}"
           
           echo "Generated SSL certificate for IP: ${DROPLET_IP}"
+      
+      # Alternative Step 4: Use CloudFlare API for automatic DNS validation
+      - name: Generate SSL with CloudFlare DNS (Alternative)
+        if: false  # Set to true to use this instead
+        run: |
+          # Install certbot and cloudflare plugin
+          sudo apt-get update
+          sudo apt-get install -y certbot python3-certbot-dns-cloudflare
+          
+          # Create CloudFlare credentials file
+          mkdir -p ~/.secrets
+          cat > ~/.secrets/cloudflare.ini << EOF
+          dns_cloudflare_email = ${{ secrets.CLOUDFLARE_EMAIL }}
+          dns_cloudflare_api_key = ${{ secrets.CLOUDFLARE_API_KEY }}
+          EOF
+          chmod 600 ~/.secrets/cloudflare.ini
+          
+          # Create directories
+          mkdir -p ssl letsencrypt
+          
+          # Generate certificate using CloudFlare DNS
+          sudo certbot certonly \
+            --dns-cloudflare \
+            --dns-cloudflare-credentials ~/.secrets/cloudflare.ini \
+            --email ${{ secrets.LETSENCRYPT_EMAIL }} \
+            --agree-tos \
+            --no-eff-email \
+            --domains api.trackspace.pro \
+            --config-dir ./letsencrypt \
+            --work-dir ./letsencrypt \
+            --logs-dir ./letsencrypt \
+            --non-interactive
+          
+          # Copy certificates
+          cp ./letsencrypt/live/api.trackspace.pro/fullchain.pem ssl/certificate.crt
+          cp ./letsencrypt/live/api.trackspace.pro/privkey.pem ssl/private.key
       
       # Step 5: Prepare Nginx files
       - name: Prepare Nginx files
@@ -88,7 +124,8 @@ jobs:
               }
               
               server {
-                  listen 443 ssl http2;
+                  listen 443 ssl;
+                  http2 on;
                   server_name ${{ secrets.DIGITALOCEAN_DROPLET_IP }} localhost;
                   
                   # SSL Configuration
@@ -169,8 +206,8 @@ jobs:
           # Validate certificate
           RUN openssl x509 -in /etc/nginx/ssl/certificate.crt -text -noout || echo "Certificate validation failed"
           
-          # Test nginx configuration
-          RUN nginx -t
+          # Note: Skip nginx -t during build since 'api' service won't exist yet
+          # The configuration will be tested when the container starts
           
           EXPOSE 80 443
           
