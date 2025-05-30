@@ -21,14 +21,18 @@ public static class DependencyInjection
                       .AllowAnyHeader()
                       .AllowAnyMethod()
                       .AllowCredentials();
+            });
 
-                options.AddPolicy("Production", policy =>
-                {
-                    policy.WithOrigins("https://pulseretention.netlify.app")
-                          .AllowAnyHeader()
-                          .AllowAnyMethod()
-                          .AllowCredentials();
-                });
+            options.AddPolicy("Production", policy =>
+            {
+                policy.WithOrigins(
+                    "https://pulseretention.netlify.app",
+                    "http://167.71.17.59",  
+                    "https://167.71.17.59" 
+                )
+                .AllowAnyHeader()
+                .AllowAnyMethod()
+                .AllowCredentials();
             });
         });
 

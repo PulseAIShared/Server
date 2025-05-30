@@ -1,4 +1,4 @@
-name: CI/CD Pipeline with Auto SSL
+﻿name: CI/CD Pipeline with Let's Encrypt SSL
 on:
   push:
     branches:
@@ -22,28 +22,9 @@ jobs:
           username: ${{ secrets.DOCKER_HUB_USERNAME }}
           password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
       
-      # Step 4: Generate self-signed SSL certificate for IP address
-      - name: Generate SSL certificate for IP address
+      # Step 4: Create nginx configuration for Let's Encrypt
+      - name: Create nginx configuration
         run: |
-          # Create directories
-          mkdir -p ssl
-          
-          # Get the droplet IP from secrets
-          DROPLET_IP="${{ secrets.DIGITALOCEAN_DROPLET_IP }}"
-          
-          # Generate self-signed certificate for IP address
-          openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-            -keyout ssl/private.key \
-            -out ssl/certificate.crt \
-            -subj "/C=US/ST=State/L=City/O=PulseAI/CN=${DROPLET_IP}" \
-            -addext "subjectAltName=IP:${DROPLET_IP}"
-          
-          echo "Generated SSL certificate for IP: ${DROPLET_IP}"
-      
-      # Step 5: Prepare Nginx files
-      - name: Prepare Nginx files
-        run: |
-          # Create nginx.conf
           cat > nginx.conf << 'EOL'
           user  nginx;
           worker_processes  auto;
@@ -69,7 +50,7 @@ jobs:
               keepalive_timeout  65;
               
               # Rate limiting
-              limit_req_zone $binary_remote_addr zone=api:10m rate=10r/s;
+              limit_req_zone $binary_remote_addr zone=api:10m rate=100r/s;
               
               # Security headers
               add_header X-Frame-Options "SAMEORIGIN" always;
@@ -77,24 +58,72 @@ jobs:
               add_header X-XSS-Protection "1; mode=block" always;
               add_header Referrer-Policy "strict-origin-when-cross-origin" always;
               
+              # HTTP server - handles Let's Encrypt challenges and redirects
               server {
                   listen 80;
-                  server_name ${{ secrets.DIGITALOCEAN_DROPLET_IP }} localhost;
+                  server_name ${{ secrets.DOMAIN_NAME || secrets.DIGITALOCEAN_DROPLET_IP }};
                   
-                  # Redirect all HTTP traffic to HTTPS
+                  # Let's Encrypt ACME challenge
+                  location /.well-known/acme-challenge/ {
+                      root /var/www/certbot;
+                      try_files $uri $uri/ =404;
+                  }
+                  
+                  # Allow health checks over HTTP
+                  location /health {
+                      proxy_pass http://api:5000/health;
+                      access_log off;
+                  }
+                  
+                  # Redirect all other HTTP traffic to HTTPS (only if SSL exists)
                   location / {
-                      return 301 https://$host$request_uri;
+                      # Check if SSL certificate exists, if not serve over HTTP
+                      if (-f /etc/letsencrypt/live/${{ secrets.DOMAIN_NAME || 'default' }}/fullchain.pem) {
+                          return 301 https://$host$request_uri;
+                      }
+                      
+                      # Serve over HTTP if no SSL certificate
+                      proxy_pass http://api:5000;
+                      proxy_http_version 1.1;
+                      proxy_set_header Upgrade $http_upgrade;
+                      proxy_set_header Connection keep-alive;
+                      proxy_set_header Host $host;
+                      proxy_set_header X-Real-IP $remote_addr;
+                      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                      proxy_set_header X-Forwarded-Proto $scheme;
+                      proxy_set_header X-Forwarded-Host $server_name;
+                      proxy_cache_bypass $http_upgrade;
+                      
+                      # Rate limiting
+                      limit_req zone=api burst=50 nodelay;
+                      
+                      # CORS headers for HTTP fallback
+                      add_header Access-Control-Allow-Origin "https://pulseretention.netlify.app" always;
+                      add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS" always;
+                      add_header Access-Control-Allow-Headers "Origin, X-Requested-With, Content-Type, Accept, Authorization" always;
+                      add_header Access-Control-Allow-Credentials "true" always;
+                      
+                      # Handle preflight requests
+                      if ($request_method = 'OPTIONS') {
+                          add_header Access-Control-Allow-Origin "https://pulseretention.netlify.app";
+                          add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS";
+                          add_header Access-Control-Allow-Headers "Origin, X-Requested-With, Content-Type, Accept, Authorization";
+                          add_header Access-Control-Allow-Credentials "true";
+                          add_header Content-Length 0;
+                          add_header Content-Type text/plain;
+                          return 204;
+                      }
                   }
               }
               
+              # HTTPS server (only active if SSL certificate exists)
               server {
-                  listen 443 ssl;
-                  http2 on;
-                  server_name ${{ secrets.DIGITALOCEAN_DROPLET_IP }} localhost;
+                  listen 443 ssl http2;
+                  server_name ${{ secrets.DOMAIN_NAME || secrets.DIGITALOCEAN_DROPLET_IP }};
                   
-                  # SSL Configuration
-                  ssl_certificate /etc/nginx/ssl/certificate.crt;
-                  ssl_certificate_key /etc/nginx/ssl/private.key;
+                  # SSL Configuration - paths for Let's Encrypt
+                  ssl_certificate /etc/letsencrypt/live/${{ secrets.DOMAIN_NAME || 'default' }}/fullchain.pem;
+                  ssl_certificate_key /etc/letsencrypt/live/${{ secrets.DOMAIN_NAME || 'default' }}/privkey.pem;
                   
                   # Modern SSL configuration
                   ssl_protocols TLSv1.2 TLSv1.3;
@@ -105,13 +134,13 @@ jobs:
                   ssl_stapling on;
                   ssl_stapling_verify on;
                   
-                  # HSTS (Optional - uncomment if you want strict transport security)
+                  # HSTS (uncomment when SSL is stable)
                   # add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
                   
                   # API endpoints
                   location / {
                       # Rate limiting
-                      limit_req zone=api burst=20 nodelay;
+                      limit_req zone=api burst=50 nodelay;
                       
                       # Proxy configuration
                       proxy_pass http://api:5000;
@@ -144,38 +173,69 @@ jobs:
               }
           }
           EOL
-          
-          # Create Dockerfile.nginx
+      
+      # Step 5: Create Dockerfile for nginx with Let's Encrypt support
+      - name: Create nginx Dockerfile
+        run: |
           cat > Dockerfile.nginx << 'EOL'
           FROM nginx:latest
           
-          # Install openssl for certificate validation
-          RUN apt-get update && apt-get install -y openssl && rm -rf /var/lib/apt/lists/*
+          # Install certbot and other utilities
+          RUN apt-get update && apt-get install -y \
+              certbot \
+              python3-certbot-nginx \
+              curl \
+              cron \
+              && rm -rf /var/lib/apt/lists/*
           
-          # Create SSL directory and certbot directory
-          RUN mkdir -p /etc/nginx/ssl /var/www/certbot
+          # Create necessary directories
+          RUN mkdir -p /var/www/certbot /etc/letsencrypt/live /etc/letsencrypt/archive
           
-          # Copy the SSL certificates
-          COPY ssl/certificate.crt /etc/nginx/ssl/certificate.crt
-          COPY ssl/private.key /etc/nginx/ssl/private.key
-          
-          # Copy the custom nginx.conf
+          # Copy the nginx configuration
           COPY nginx.conf /etc/nginx/nginx.conf
           
-          # Set proper permissions
-          RUN chmod 644 /etc/nginx/ssl/certificate.crt && \
-              chmod 600 /etc/nginx/ssl/private.key && \
-              chown root:root /etc/nginx/ssl/*
+          # Create SSL certificate renewal script
+          RUN echo '#!/bin/bash\n\
+          certbot renew --quiet --webroot --webroot-path=/var/www/certbot\n\
+          nginx -s reload\n\
+          ' > /usr/local/bin/renew-certs.sh && chmod +x /usr/local/bin/renew-certs.sh
           
-          # Validate certificate
-          RUN openssl x509 -in /etc/nginx/ssl/certificate.crt -text -noout || echo "Certificate validation failed"
-          
-          # Note: Skip nginx -t during build since 'api' service won't exist yet
-          # The configuration will be tested when the container starts
+          # Create initialization script
+          RUN echo '#!/bin/bash\n\
+          echo "Starting nginx with SSL support..."\n\
+          \n\
+          # Start nginx in background\n\
+          nginx\n\
+          \n\
+          # Wait for nginx to start\n\
+          sleep 5\n\
+          \n\
+          # If domain is set and no certificate exists, try to get one\n\
+          if [ ! -z "$DOMAIN_NAME" ] && [ ! -f "/etc/letsencrypt/live/$DOMAIN_NAME/fullchain.pem" ]; then\n\
+              echo "Attempting to get SSL certificate for $DOMAIN_NAME..."\n\
+              certbot certonly --webroot \\\n\
+                  --webroot-path=/var/www/certbot \\\n\
+                  --email "$CERTBOT_EMAIL" \\\n\
+                  --agree-tos \\\n\
+                  --no-eff-email \\\n\
+                  -d "$DOMAIN_NAME" || echo "SSL certificate generation failed, continuing with HTTP"\n\
+              \n\
+              # Reload nginx to pick up new certificates\n\
+              nginx -s reload\n\
+          fi\n\
+          \n\
+          # Setup certificate renewal cron job\n\
+          echo "0 12 * * * /usr/local/bin/renew-certs.sh" | crontab -\n\
+          cron\n\
+          \n\
+          # Keep nginx running in foreground\n\
+          nginx -s stop\n\
+          exec nginx -g "daemon off;"\n\
+          ' > /docker-entrypoint.sh && chmod +x /docker-entrypoint.sh
           
           EXPOSE 80 443
           
-          CMD ["nginx", "-g", "daemon off;"]
+          ENTRYPOINT ["/docker-entrypoint.sh"]
           EOL
       
       # Step 6: Build and push API image
@@ -227,17 +287,21 @@ jobs:
                 - "443:443"
               depends_on:
                 - api
+              environment:
+                DOMAIN_NAME: "\${DOMAIN_NAME:-}"
+                CERTBOT_EMAIL: "\${CERTBOT_EMAIL:-admin@example.com}"
+              volumes:
+                - letsencrypt:/etc/letsencrypt
+                - certbot:/var/www/certbot
               networks:
                 - pulseai-network
               restart: unless-stopped
-              volumes:
-                # Optional: Mount Let's Encrypt directory for auto-renewal
-                - certbot-data:/var/www/certbot
               healthcheck:
                 test: ["CMD", "curl", "-f", "http://localhost/health"]
                 interval: 30s
                 timeout: 10s
                 retries: 3
+                start_period: 40s
             
             db:
               image: postgres:15-alpine
@@ -258,7 +322,8 @@ jobs:
           
           volumes:
             postgres_data:
-            certbot-data:
+            letsencrypt:
+            certbot:
           
           networks:
             pulseai-network:
@@ -271,6 +336,8 @@ jobs:
           cat > .env << EOL
           DB_PASSWORD=${{ secrets.DB_PASSWORD }}
           JWT_SECRET=${{ secrets.JWT_SECRET }}
+          DOMAIN_NAME=${{ secrets.DOMAIN_NAME || '' }}
+          CERTBOT_EMAIL=${{ secrets.CERTBOT_EMAIL || 'admin@example.com' }}
           EOL
       
       # Step 10: Setup SSH and Deploy to Droplet
@@ -328,51 +395,62 @@ jobs:
             # Pull latest images
             docker compose pull
             
-            # Stop current containers
-            docker compose down
+            # Stop current containers (but preserve volumes)
+            docker compose down --remove-orphans
+            
+            # Clean up old containers and images
+            docker system prune -f
             
             # Start new deployment
+            echo "Starting services..."
             docker compose up -d
             
             # Wait for services to start
-            echo "Waiting for services to start..."
-            sleep 30
+            echo "Waiting for services to initialize..."
+            sleep 45
             
             # Check if services are running
+            echo "=== Service Status ==="
             docker compose ps
             
-            # Test API health (allow self-signed certificates)
-            timeout 60 bash -c 'until curl -f -k https://localhost/health; do sleep 5; done' || echo "Health check failed"
+            # Test API health over HTTP first
+            echo "=== Testing HTTP health endpoint ==="
+            timeout 60 bash -c 'until curl -f http://localhost/health; do echo "Waiting for HTTP health..."; sleep 5; done' || echo "HTTP health check failed"
+            
+            # If domain is configured, also test HTTPS
+            if [ ! -z "$DOMAIN_NAME" ]; then
+              echo "=== Testing HTTPS health endpoint ==="
+              timeout 60 bash -c 'until curl -f -k https://localhost/health; do echo "Waiting for HTTPS health..."; sleep 5; done' || echo "HTTPS health check failed"
+            fi
             
             # Show logs for debugging
-            docker compose logs --tail=50
+            echo "=== Recent logs ==="
+            docker compose logs --tail=30
+            
+            echo "=== Deployment Summary ==="
+            echo "HTTP endpoint: http://${{ secrets.DIGITALOCEAN_DROPLET_IP }}"
+            if [ ! -z "$DOMAIN_NAME" ]; then
+              echo "Domain endpoint: https://$DOMAIN_NAME (if SSL certificate was generated)"
+            fi
+            echo "Health check: http://${{ secrets.DIGITALOCEAN_DROPLET_IP }}/health"
           EOF
       
-      # Step 11: Optional - Set up certificate auto-renewal
-      - name: Setup certificate renewal (Optional)
-        if: false  # Set to true to enable
+      # Step 11: Post-deployment verification
+      - name: Verify deployment
         run: |
-          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
-            root@${{ secrets.DIGITALOCEAN_DROPLET_IP }} << 'EOF'
-            # Create renewal script
-            cat > /opt/pulseai/renew-certs.sh << 'SCRIPT_EOF'
-            #!/bin/bash
-            cd /opt/pulseai
-            
-            # Renew certificates
-            docker run --rm \
-              -v /opt/pulseai/letsencrypt:/etc/letsencrypt \
-              -v /opt/pulseai/certbot:/var/www/certbot \
-              certbot/certbot renew --quiet
-            
-            # Reload nginx if certificates were renewed
-            if [ $? -eq 0 ]; then
-              docker compose exec nginx nginx -s reload
-            fi
-          SCRIPT_EOF
-            
-            chmod +x /opt/pulseai/renew-certs.sh
-            
-            # Add to crontab (run twice daily)
-            (crontab -l 2>/dev/null; echo "0 2,14 * * * /opt/pulseai/renew-certs.sh") | crontab -
-          EOF
+          echo "Verifying deployment..."
+          
+          # Wait a bit more for services to fully start
+          sleep 30
+          
+          # Test the API endpoint
+          if curl -f -m 30 http://${{ secrets.DIGITALOCEAN_DROPLET_IP }}/health; then
+            echo "✅ API is accessible via HTTP"
+          else
+            echo "❌ API health check failed"
+            exit 1
+          fi
+          
+          echo "🚀 Deployment completed successfully!"
+          echo "📍 API URL: http://${{ secrets.DIGITALOCEAN_DROPLET_IP }}"
+          echo "🔗 Use this URL in your client: http://${{ secrets.DIGITALOCEAN_DROPLET_IP }}"
