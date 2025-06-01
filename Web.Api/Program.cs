@@ -2,6 +2,7 @@ using System.Reflection;
 using Application;
 using HealthChecks.UI.Client;
 using Infrastructure;
+using Infrastructure.Hubs;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Serilog;
 using Web.Api;
@@ -37,6 +38,7 @@ else
 }
 
 app.MapEndpoints();
+app.MapHub<NotificationHub>("/hubs/notifications");
 
 if (app.Environment.IsDevelopment())
 {

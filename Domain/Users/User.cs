@@ -23,10 +23,10 @@ public sealed class User : Entity
     [Required]
     public UserRole Role { get; set; } = UserRole.User;
 
-    public Guid? CompanyId { get; set; }
+    public Guid CompanyId { get; set; }
 
     // Navigation properties
-    public Company? Company { get; set; }
+    public Company Company { get; set; }
     public ICollection<Domain.Integration.Integration> Integrations { get; set; } = new List<Domain.Integration.Integration>();
     public DateTime DateCreated { get; private set; } = DateTime.UtcNow;
 

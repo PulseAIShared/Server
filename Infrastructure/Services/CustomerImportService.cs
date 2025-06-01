@@ -221,6 +221,130 @@ public class CustomerImportService(
         }
     }
 
+    public async Task CancelImportJobAsync(Guid jobId)
+    {
+        var job = await context.ImportJobs.FindAsync(jobId);
+        if (job == null)
+        {
+            logger.LogWarning("Import job {JobId} not found for cancellation", jobId);
+            return;
+        }
+
+        if (!job.CanBeCancelled)
+        {
+            logger.LogWarning("Import job {JobId} cannot be cancelled in status {Status}", jobId, job.Status);
+            return;
+        }
+
+        try
+        {
+            job.Cancel();
+            await context.SaveChangesAsync();
+
+            // Clean up file
+            try
+            {
+                await fileStorageService.DeleteFileAsync(job.FilePath);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Failed to delete file {FilePath} for cancelled job {JobId}", job.FilePath, jobId);
+            }
+
+            logger.LogInformation("Cancelled import job {JobId}", jobId);
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Failed to cancel import job {JobId}", jobId);
+            throw;
+        }
+    }
+
+    public async Task RetryImportJobAsync(Guid jobId)
+    {
+        var job = await context.ImportJobs.FindAsync(jobId);
+        if (job == null)
+        {
+            logger.LogWarning("Import job {JobId} not found for retry", jobId);
+            return;
+        }
+
+        if (job.Status != ImportJobStatus.Failed)
+        {
+            logger.LogWarning("Cannot retry import job {JobId} in status {Status}", jobId, job.Status);
+            return;
+        }
+
+        try
+        {
+            // Reset job status and clear error data
+            job.Status = ImportJobStatus.Pending;
+            job.ErrorMessage = null;
+            job.ValidationErrors = null;
+            job.ProcessedRecords = 0;
+            job.SuccessfulRecords = 0;
+            job.FailedRecords = 0;
+            job.SkippedRecords = 0;
+            job.StartedAt = null;
+            job.CompletedAt = null;
+
+            await context.SaveChangesAsync();
+
+            // Start processing again
+            await ProcessImportFileAsync(jobId);
+
+            logger.LogInformation("Retried import job {JobId}", jobId);
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Failed to retry import job {JobId}", jobId);
+            throw;
+        }
+    }
+
+    public async Task CleanupOldImportJobsAsync(int olderThanDays = 30)
+    {
+        try
+        {
+            var cutoffDate = DateTime.UtcNow.AddDays(-olderThanDays);
+
+            var oldJobs = await context.ImportJobs
+                .Where(ij => ij.CreatedAt < cutoffDate &&
+                            (ij.Status == ImportJobStatus.Completed ||
+                             ij.Status == ImportJobStatus.Failed ||
+                             ij.Status == ImportJobStatus.Cancelled))
+                .ToListAsync();
+
+            foreach (var job in oldJobs)
+            {
+                try
+                {
+                    // Delete associated file
+                    if (await fileStorageService.FileExistsAsync(job.FilePath))
+                    {
+                        await fileStorageService.DeleteFileAsync(job.FilePath);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(ex, "Failed to delete file {FilePath} for job {JobId}", job.FilePath, job.Id);
+                }
+            }
+
+            // Remove jobs from database
+            context.ImportJobs.RemoveRange(oldJobs);
+            await context.SaveChangesAsync();
+
+            logger.LogInformation("Cleaned up {Count} old import jobs older than {Days} days", oldJobs.Count, olderThanDays);
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Failed to cleanup old import jobs");
+            throw;
+        }
+    }
+    
+
     private async Task<List<ImportError>> CheckForDuplicatesAsync(List<Customer> customers, Guid companyId)
     {
         var errors = new List<ImportError>();

@@ -1,10 +1,12 @@
 ﻿using System.Text;
 using Application.Abstractions.Authentication;
 using Application.Abstractions.Data;
+using Application.Services;
 using Infrastructure.Authentication;
 using Infrastructure.Authorization;
 using Infrastructure.Database;
 using Infrastructure.DomainEvents;
+using Infrastructure.Services;
 using Infrastructure.Time;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
@@ -23,17 +25,34 @@ public static class DependencyInjection
         this IServiceCollection services,
         IConfiguration configuration) =>
         services
-            .AddServices()
+            .AddServices(configuration)
             .AddDatabase(configuration)
             .AddHealthChecks(configuration)
             .AddAuthenticationInternal(configuration)
-            .AddAuthorizationInternal();
+            .AddAuthorizationInternal()
+            .AddSignalR(configuration);
 
-    private static IServiceCollection AddServices(this IServiceCollection services)
+    private static IServiceCollection AddServices(this IServiceCollection services, IConfiguration configuration)
     {
         services.AddSingleton<IDateTimeProvider, DateTimeProvider>();
 
         services.AddTransient<IDomainEventsDispatcher, DomainEventsDispatcher>();
+
+        var useAzureStorage = configuration.GetValue<bool>("FileStorage:UseAzure");
+        if (useAzureStorage)
+        {
+            services.AddScoped<IFileStorageService, AzureBlobStorageService>();
+        }
+        else
+        {
+            services.AddScoped<IFileStorageService, LocalFileStorageService>();
+        }
+
+        // Import service
+        services.AddScoped<ICustomerImportService, CustomerImportService>();
+
+        // Notification service
+        services.AddScoped<INotificationService, NotificationService>();
 
         return services;
     }
@@ -89,6 +108,12 @@ public static class DependencyInjection
                         {
                             context.Token = context.Request.Cookies["jwt"];
                         }
+                        var accessToken = context.Request.Query["access_token"];
+                        var path = context.HttpContext.Request.Path;
+                        if (!string.IsNullOrEmpty(accessToken) && path.StartsWithSegments("/hubs"))
+                        {
+                            context.Token = accessToken;
+                        }
                         return Task.CompletedTask;
                     }
                 };
@@ -113,4 +138,14 @@ public static class DependencyInjection
 
         return services;
     }
+    private static IServiceCollection AddSignalR(this IServiceCollection services, IConfiguration configuration)
+    {
+        services.AddSignalR(options =>
+        {
+            options.EnableDetailedErrors = true; 
+        });
+
+        return services;
+    }
+
 }
