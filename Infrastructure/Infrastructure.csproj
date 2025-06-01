@@ -23,4 +23,10 @@
     <ProjectReference Include="..\Domain\Domain.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Folder Include="Integrations\Enums\" />
+    <Folder Include="Integrations\Mappers\" />
+    <Folder Include="Integrations\Services\" />
+  </ItemGroup>
+
 </Project>

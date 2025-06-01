@@ -1,14 +1,33 @@
-﻿using SharedKernel;
+﻿
+
+using SharedKernel;
+using System.ComponentModel.DataAnnotations;
 
 namespace Domain.Users;
 
 public sealed class User : Entity
 {
-    public string Email { get; set; }
-    public string FirstName { get; set; }
-    public string LastName { get; set; }
+    [Required]
+    public string FirstName { get; set; } = string.Empty;
+
+    [Required]
+    public string LastName { get; set; } = string.Empty;
+
+    [Required]
+    [EmailAddress]
+    public string Email { get; set; } = string.Empty;
+
+    public string? Avatar { get; set; }
     public string PasswordHash { get; set; }
+
+    [Required]
     public UserRole Role { get; set; } = UserRole.User;
+
+    public Guid? CompanyId { get; set; }
+
+    // Navigation properties
+    public Company? Company { get; set; }
+    public ICollection<Domain.Integration.Integration> Integrations { get; set; } = new List<Domain.Integration.Integration>();
     public DateTime DateCreated { get; private set; } = DateTime.UtcNow;
 
     public string? RefreshToken { get; set; }

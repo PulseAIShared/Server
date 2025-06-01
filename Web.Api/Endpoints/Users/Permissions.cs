@@ -1,6 +1,7 @@
-﻿namespace Web.Api.Endpoints.Users;
+﻿namespace Web.Api.Endpoints.Integrations;
 
 internal static class Permissions
 {
-    internal const string UsersAccess = "users:access";
+    internal const string IntegrationsAccess = "integrations:read";
+    internal const string IntegrationsWrite = "integrations:write";
 }

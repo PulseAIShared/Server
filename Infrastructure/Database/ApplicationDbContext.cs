@@ -1,9 +1,17 @@
 ﻿using Application.Abstractions.Data;
+using Domain.Analytics;
+using Domain.Campaigns;
+using Domain.Customers;
+using Domain.Integration;
+using Domain.Segments;
 using Domain.Todos;
 using Domain.Users;
+using Infrastructure.Database.Configurations;
 using Infrastructure.DomainEvents;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.VisualBasic;
 using SharedKernel;
+
 
 namespace Infrastructure.Database;
 
@@ -15,10 +23,42 @@ public sealed class ApplicationDbContext(
     public DbSet<User> Users { get; set; }
 
     public DbSet<TodoItem> TodoItems { get; set; }
+    public DbSet<Company> Companies { get; set; } = null!;
+
+    // Customer Management
+    public DbSet<Customer> Customers { get; set; } = null!;
+    public DbSet<CustomerActivity> CustomerActivities { get; set; } = null!;
+    public DbSet<ChurnPrediction> ChurnPredictions { get; set; } = null!;
+
+    // Segmentation
+    public DbSet<CustomerSegment> CustomerSegments { get; set; } = null!;
+    public DbSet<SegmentCriteria> SegmentCriteria { get; set; } = null!;
+
+    // Campaign Management
+    public DbSet<Campaign> Campaigns { get; set; } = null!;
+    public DbSet<CampaignStep> CampaignSteps { get; set; } = null!;
+
+    // Analytics & Reporting
+    public DbSet<DashboardMetrics> DashboardMetrics { get; set; } = null!;
+
+    // Integration Management
+    public DbSet<Integration> Integrations { get; set; } = null!;
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.ApplyConfigurationsFromAssembly(typeof(ApplicationDbContext).Assembly);
+
+        modelBuilder.ApplyConfiguration(new UserConfiguration());
+        modelBuilder.ApplyConfiguration(new CompanyConfiguration());
+        modelBuilder.ApplyConfiguration(new CustomerConfiguration());
+        modelBuilder.ApplyConfiguration(new CustomerActivityConfiguration());
+        modelBuilder.ApplyConfiguration(new ChurnPredictionConfiguration());
+        modelBuilder.ApplyConfiguration(new SegmentConfiguration());
+        modelBuilder.ApplyConfiguration(new SegmentCriteriaConfiguration());
+        modelBuilder.ApplyConfiguration(new CampaignConfiguration());
+        modelBuilder.ApplyConfiguration(new CampaignStepConfiguration());
+        modelBuilder.ApplyConfiguration(new IntegrationConfiguration());
+        modelBuilder.ApplyConfiguration(new DashboardMetricsConfiguration());
 
         modelBuilder.HasDefaultSchema(Schemas.Default);
     }
