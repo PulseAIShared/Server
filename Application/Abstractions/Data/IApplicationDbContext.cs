@@ -1,4 +1,7 @@
 ﻿
+using Domain.Customers;
+using Domain.Imports;
+using Domain.Notification;
 using Domain.Todos;
 using Domain.Users;
 using Microsoft.EntityFrameworkCore;
@@ -8,6 +11,10 @@ namespace Application.Abstractions.Data;
 public interface IApplicationDbContext
 {
     DbSet<User> Users { get; }
+    DbSet<Notification> Notifications { get; }
+
+    DbSet<ImportJob> ImportJobs { get; }
+    DbSet<Customer> Customers { get; }
 
     DbSet<TodoItem> TodoItems { get; }
     Task<int> SaveChangesAsync(CancellationToken cancellationToken = default);

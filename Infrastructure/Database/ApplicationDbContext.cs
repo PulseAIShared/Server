@@ -2,7 +2,9 @@
 using Domain.Analytics;
 using Domain.Campaigns;
 using Domain.Customers;
+using Domain.Imports;
 using Domain.Integration;
+using Domain.Notification;
 using Domain.Segments;
 using Domain.Todos;
 using Domain.Users;
@@ -44,6 +46,12 @@ public sealed class ApplicationDbContext(
     // Integration Management
     public DbSet<Integration> Integrations { get; set; } = null!;
 
+    // Import Management
+    public DbSet<ImportJob> ImportJobs { get; set; } = null!;
+
+    // Notifications
+    public DbSet<Notification> Notifications { get; set; } = null!;
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.ApplyConfigurationsFromAssembly(typeof(ApplicationDbContext).Assembly);
@@ -59,6 +67,8 @@ public sealed class ApplicationDbContext(
         modelBuilder.ApplyConfiguration(new CampaignStepConfiguration());
         modelBuilder.ApplyConfiguration(new IntegrationConfiguration());
         modelBuilder.ApplyConfiguration(new DashboardMetricsConfiguration());
+        modelBuilder.ApplyConfiguration(new ImportJobConfiguration());
+        modelBuilder.ApplyConfiguration(new NotificationConfiguration());
 
         modelBuilder.HasDefaultSchema(Schemas.Default);
     }

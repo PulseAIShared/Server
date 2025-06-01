@@ -27,7 +27,6 @@
 
   <ItemGroup>
     <Folder Include="Endpoints\Campaigns\" />
-    <Folder Include="Endpoints\Notifications\" />
     <Folder Include="Endpoints\Segments\" />
   </ItemGroup>
 
