@@ -3,6 +3,7 @@ using Application.Abstractions.Data;
 using Application.Abstractions.Messaging;
 using Application.Services;
 using Domain.Imports;
+using Hangfire;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using SharedKernel;
@@ -15,11 +16,11 @@ using System.Threading.Tasks;
 namespace Application.Imports.Commands
 {
     internal sealed class CancelImportJobCommandHandler(
-       IApplicationDbContext context,
-       IUserContext userContext,
-       ICustomerImportService customerImportService,
-       ILogger<CancelImportJobCommandHandler> logger)
-       : ICommandHandler<CancelImportJobCommand, bool>
+         IApplicationDbContext context,
+         IUserContext userContext,
+         IBackgroundJobClient backgroundJobClient,
+         ILogger<CancelImportJobCommandHandler> logger)
+         : ICommandHandler<CancelImportJobCommand, bool>
     {
         public async Task<Result<bool>> Handle(CancelImportJobCommand command, CancellationToken cancellationToken)
         {
@@ -43,13 +44,19 @@ namespace Application.Imports.Commands
 
             try
             {
-                await customerImportService.CancelImportJobAsync(command.ImportJobId);
-                logger.LogInformation("Cancelled import job {ImportJobId} for user {UserId}", command.ImportJobId, userContext.UserId);
+                // Queue cancellation job with Hangfire
+                var jobId = backgroundJobClient.Enqueue<IImportBackgroundService>(
+                    "imports", // Use specific queue for imports
+                    service => service.CancelImportAsync(importJob.Id));
+
+                logger.LogInformation("Queued cancellation for import job {ImportJobId} for user {UserId}, Hangfire job {HangfireJobId}",
+                    command.ImportJobId, userContext.UserId, jobId);
+
                 return true;
             }
             catch (Exception ex)
             {
-                logger.LogError(ex, "Failed to cancel import job {ImportJobId}", command.ImportJobId);
+                logger.LogError(ex, "Failed to queue cancellation for import job {ImportJobId}", command.ImportJobId);
                 return Result.Failure<bool>(Error.Problem(
                     "ImportJob.CancelFailed",
                     "Failed to cancel import job. Please try again."));

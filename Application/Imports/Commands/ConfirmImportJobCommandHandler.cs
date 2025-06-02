@@ -12,15 +12,17 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Hangfire;
 
 namespace Application.Imports.Commands
 {
     internal sealed class ConfirmImportJobCommandHandler(
-      IApplicationDbContext context,
-      IUserContext userContext,
-      ICustomerImportService customerImportService,
-      ILogger<ConfirmImportJobCommandHandler> logger)
-      : ICommandHandler<ConfirmImportJobCommand, bool>
+        IApplicationDbContext context,
+        IUserContext userContext,
+        IBackgroundJobClient backgroundJobClient,
+        ILogger<ConfirmImportJobCommandHandler> logger)
+        : ICommandHandler<ConfirmImportJobCommand, bool>
     {
         public async Task<Result<bool>> Handle(ConfirmImportJobCommand command, CancellationToken cancellationToken)
         {
@@ -44,20 +46,13 @@ namespace Application.Imports.Commands
                     $"Cannot confirm import job in {importJob.Status} status"));
             }
 
-            // Start processing in background
-            _ = Task.Run(async () =>
-            {
-                try
-                {
-                    await customerImportService.ProcessImportFileAsync(importJob.Id);
-                }
-                catch (Exception ex)
-                {
-                    logger.LogError(ex, "Failed to process import file for job {ImportJobId}", importJob.Id);
-                }
-            }, cancellationToken);
+            // Queue processing job with Hangfire
+            var jobId = backgroundJobClient.Enqueue<IImportBackgroundService>(
+                "imports", // Use specific queue for imports
+                service => service.ProcessImportAsync(importJob.Id));
 
-            logger.LogInformation("Confirmed import job {ImportJobId} for user {UserId}", command.ImportJobId, userContext.UserId);
+            logger.LogInformation("Confirmed import job {ImportJobId} for user {UserId}, queued processing job {HangfireJobId}",
+                command.ImportJobId, userContext.UserId, jobId);
 
             return true;
         }

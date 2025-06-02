@@ -1,5 +1,7 @@
 using System.Reflection;
 using Application;
+using Hangfire;
+using Hangfire.PostgreSql;
 using HealthChecks.UI.Client;
 using Infrastructure;
 using Infrastructure.Hubs;
@@ -16,8 +18,9 @@ builder.Services.AddSwaggerGenWithAuth();
 
 builder.Services
     .AddApplication()
-    .AddPresentation(builder.Configuration)
+    .AddPresentation()
     .AddInfrastructure(builder.Configuration);
+
 
 builder.Services.AddEndpoints(Assembly.GetExecutingAssembly());
 
@@ -38,6 +41,11 @@ else
 }
 
 app.MapEndpoints();
+app.UseHangfireDashboard("/hangfire", new DashboardOptions
+{
+    Authorization = new[] { new HangfireAuthorizationFilter() }
+});
+
 app.MapHub<NotificationHub>("/hubs/notifications");
 
 if (app.Environment.IsDevelopment())
@@ -69,4 +77,14 @@ await app.RunAsync();
 namespace Web.Api
 {
     public partial class Program;
+}
+
+public class HangfireAuthorizationFilter : Hangfire.Dashboard.IDashboardAuthorizationFilter
+{
+    public bool Authorize(Hangfire.Dashboard.DashboardContext context)
+    {
+        // In development, allow all
+        // In production, implement proper authorization
+        return true;
+    }
 }

@@ -13,14 +13,17 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Hangfire;
 
 namespace Application.Imports.Commands
 {
+
     internal sealed class CreateImportJobCommandHandler(
         IApplicationDbContext context,
         IUserContext userContext,
         IFileStorageService fileStorageService,
-        ICustomerImportService customerImportService,
+        IBackgroundJobClient backgroundJobClient,
         ILogger<CreateImportJobCommandHandler> logger)
         : ICommandHandler<CreateImportJobCommand, Guid>
     {
@@ -68,20 +71,13 @@ namespace Application.Imports.Commands
                 context.ImportJobs.Add(importJob);
                 await context.SaveChangesAsync(cancellationToken);
 
-                // Start validation in background
-                _ = Task.Run(async () =>
-                {
-                    try
-                    {
-                        await customerImportService.ValidateImportFileAsync(importJob.Id, command.SkipDuplicates);
-                    }
-                    catch (Exception ex)
-                    {
-                        logger.LogError(ex, "Failed to validate import file for job {ImportJobId}", importJob.Id);
-                    }
-                }, cancellationToken);
+                // Queue validation job with Hangfire
+                var jobId = backgroundJobClient.Enqueue<IImportBackgroundService>(
+                    "imports", // Use specific queue for imports
+                    service => service.ValidateImportAsync(importJob.Id, command.SkipDuplicates));
 
-                logger.LogInformation("Created import job {ImportJobId} for user {UserId}", importJob.Id, command.UserId);
+                logger.LogInformation("Created import job {ImportJobId} for user {UserId}, queued validation job {HangfireJobId}",
+                    importJob.Id, command.UserId, jobId);
 
                 return importJob.Id;
             }
@@ -94,4 +90,5 @@ namespace Application.Imports.Commands
             }
         }
     }
+
 }

@@ -1,0 +1,4 @@
+name,email,plan,monthlyRevenue,subscriptionStartDate,lastActivity,companyName,phoneNumber
+John Smith,john.smith@company.com,Pro,149.00,2023-01-15,2024-05-30,Acme Corp,+1-555-0123
+Jane Doe,jane.doe@startup.io,Enterprise,299.00,2022-06-01,2024-05-29,Startup Inc,+1-555-0124
+Mike Johnson,mike.j@techfirm.com,Basic,49.00,2023-08-20,2024-05-28,TechFirm LLC,+1-555-0125

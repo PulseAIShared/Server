@@ -2,6 +2,8 @@
 using Application.Abstractions.Authentication;
 using Application.Abstractions.Data;
 using Application.Services;
+using Hangfire;
+using Hangfire.PostgreSql;
 using Infrastructure.Authentication;
 using Infrastructure.Authorization;
 using Infrastructure.Database;
@@ -30,7 +32,8 @@ public static class DependencyInjection
             .AddHealthChecks(configuration)
             .AddAuthenticationInternal(configuration)
             .AddAuthorizationInternal()
-            .AddSignalR(configuration);
+            .AddSignalR(configuration)
+            .AddHangfireServices(configuration);
 
     private static IServiceCollection AddServices(this IServiceCollection services, IConfiguration configuration)
     {
@@ -50,7 +53,7 @@ public static class DependencyInjection
 
         // Import service
         services.AddScoped<ICustomerImportService, CustomerImportService>();
-
+        services.AddScoped<IImportBackgroundService, ImportBackgroundService>();
         // Notification service
         services.AddScoped<INotificationService, NotificationService>();
 
@@ -143,6 +146,36 @@ public static class DependencyInjection
         services.AddSignalR(options =>
         {
             options.EnableDetailedErrors = true; 
+        });
+
+        return services;
+    }
+
+    private static IServiceCollection AddHangfireServices(this IServiceCollection services, IConfiguration configuration)
+    {
+        // Add Hangfire services
+        services.AddHangfire(config => config
+            .SetDataCompatibilityLevel(CompatibilityLevel.Version_180)
+            .UseSimpleAssemblyNameTypeSerializer()
+            .UseRecommendedSerializerSettings()
+            .UsePostgreSqlStorage(c =>
+                c.UseNpgsqlConnection(configuration.GetConnectionString("Database")),
+                new PostgreSqlStorageOptions
+                {
+                    QueuePollInterval = TimeSpan.FromSeconds(10),
+                    JobExpirationCheckInterval = TimeSpan.FromHours(1),
+                    CountersAggregateInterval = TimeSpan.FromMinutes(5),
+                    PrepareSchemaIfNecessary = true,
+                    TransactionSynchronisationTimeout = TimeSpan.FromMinutes(5),
+
+                }));
+
+        // Add the processing server as IHostedService
+        services.AddHangfireServer(options =>
+        {
+            options.HeartbeatInterval = TimeSpan.FromSeconds(10);
+            options.Queues = new[] { "default", "imports", "notifications" };
+            options.WorkerCount = Environment.ProcessorCount * 2;
         });
 
         return services;
