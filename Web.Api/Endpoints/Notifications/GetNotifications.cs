@@ -52,21 +52,6 @@ namespace Web.Api.Endpoints.Notifications
             .RequireAuthorization()
             .WithTags("Notifications");
 
-            app.MapPost("notifications/{notificationId:guid}/mark-read", async (
-                Guid notificationId,
-                ICommandHandler<MarkNotificationAsReadCommand, bool> handler,
-                CancellationToken cancellationToken) =>
-            {
-                var command = new MarkNotificationAsReadCommand(notificationId);
-                Result<bool> result = await handler.Handle(command, cancellationToken);
-
-                return result.Match(
-                    success => Results.Ok(new { Message = "Notification marked as read" }),
-                    CustomResults.Problem
-                );
-            })
-            .RequireAuthorization()
-            .WithTags("Notifications");
         }
     }
 }

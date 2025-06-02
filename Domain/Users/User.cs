@@ -24,11 +24,12 @@ public sealed class User : Entity
     public UserRole Role { get; set; } = UserRole.User;
 
     public Guid CompanyId { get; set; }
+    public bool IsCompanyOwner { get; set; } 
 
     // Navigation properties
     public Company Company { get; set; }
-    public ICollection<Domain.Integration.Integration> Integrations { get; set; } = new List<Domain.Integration.Integration>();
-    public DateTime DateCreated { get; private set; } = DateTime.UtcNow;
+    public ICollection<CompanyInvitation> SentInvitations { get; set; } = new List<CompanyInvitation>();
+    public ICollection<Domain.Integration.Integration> ConfiguredIntegrations { get; set; } = new List<Domain.Integration.Integration>();
 
     public string? RefreshToken { get; set; }
     public DateTime? RefreshTokenExpiryTime { get; set; }
@@ -37,7 +38,8 @@ public sealed class User : Entity
     public enum UserRole
     {
         User = 0,
-        Admin = 1
+        CompanyOwner = 1,
+        Admin = 2
     }
     public void SetRefreshToken(string token, DateTime expiryTime)
     {

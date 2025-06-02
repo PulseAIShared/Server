@@ -26,6 +26,8 @@ public sealed class ApplicationDbContext(
 
     public DbSet<TodoItem> TodoItems { get; set; }
     public DbSet<Company> Companies { get; set; } = null!;
+    public DbSet<CompanyInvitation> CompanyInvitations { get; set; }
+
 
     // Customer Management
     public DbSet<Customer> Customers { get; set; } = null!;
@@ -69,6 +71,7 @@ public sealed class ApplicationDbContext(
         modelBuilder.ApplyConfiguration(new DashboardMetricsConfiguration());
         modelBuilder.ApplyConfiguration(new ImportJobConfiguration());
         modelBuilder.ApplyConfiguration(new NotificationConfiguration());
+        modelBuilder.ApplyConfiguration(new CompanyInvitationConfiguration());
 
         modelBuilder.HasDefaultSchema(Schemas.Default);
     }

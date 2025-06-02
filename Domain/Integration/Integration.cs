@@ -13,7 +13,7 @@ namespace Domain.Integration
     public class Integration : Entity
     {
         [Required]
-        public Guid UserId { get; set; } = Guid.Empty;
+        public Guid CompanyId { get; set; } = Guid.Empty;  // Changed from UserId to CompanyId
 
         [Required]
         public IntegrationType Type { get; set; }
@@ -33,7 +33,10 @@ namespace Domain.Integration
 
         public string? LastSyncError { get; set; }
 
-        // Navigation properties
-        public User User { get; set; } = null!;
+        public Guid ConfiguredByUserId { get; set; }
+        public DateTime ConfiguredAt { get; set; } = DateTime.UtcNow;
+
+        public Company Company { get; set; } = null!;
+        public User ConfiguredBy { get; set; } = null!;
     }
 }

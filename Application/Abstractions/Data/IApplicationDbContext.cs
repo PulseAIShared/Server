@@ -15,7 +15,8 @@ public interface IApplicationDbContext
 
     DbSet<ImportJob> ImportJobs { get; }
     DbSet<Customer> Customers { get; }
-
+    DbSet<Company> Companies { get; }
+    DbSet<CompanyInvitation> CompanyInvitations { get; }
     DbSet<TodoItem> TodoItems { get; }
     Task<int> SaveChangesAsync(CancellationToken cancellationToken = default);
 }

@@ -15,6 +15,10 @@ namespace Infrastructure.Database.Configurations
         {
             builder.HasKey(i => i.Id);
 
+            builder.Property(i => i.CompanyId)
+                .IsRequired()
+                .HasMaxLength(36);
+
             builder.Property(i => i.Type)
                 .HasConversion<string>()
                 .IsRequired();
@@ -27,6 +31,14 @@ namespace Infrastructure.Database.Configurations
                 .IsRequired()
                 .HasMaxLength(100);
 
+            builder.Property(i => i.ConfiguredByUserId)
+                .IsRequired()
+                .HasMaxLength(36);
+
+            builder.Property(i => i.ConfiguredAt)
+                .IsRequired()
+                .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
             // JSON columns for configuration and credentials
             builder.Property(i => i.Configuration)
                 .HasColumnType("jsonb");
@@ -37,11 +49,33 @@ namespace Infrastructure.Database.Configurations
             builder.Property(i => i.LastSyncError)
                 .HasMaxLength(2000);
 
+            // Indexes
+            builder.HasIndex(i => i.CompanyId)
+                .HasDatabaseName("ix_integrations_company_id");
+
+            builder.HasIndex(i => i.Type)
+                .HasDatabaseName("ix_integrations_type");
+
+            builder.HasIndex(i => i.Status)
+                .HasDatabaseName("ix_integrations_status");
+
+            // Unique constraint: one integration of each type per company
+            builder.HasIndex(i => new { i.CompanyId, i.Type })
+                .IsUnique()
+                .HasDatabaseName("ix_integrations_company_type");
+
             // Relationships
-            builder.HasOne(i => i.User)
-                .WithMany(u => u.Integrations)
-                .HasForeignKey(i => i.UserId)
+            builder.HasOne(i => i.Company)
+                .WithMany(c => c.Integrations)
+                .HasForeignKey(i => i.CompanyId)
                 .OnDelete(DeleteBehavior.Cascade);
+
+            builder.HasOne(i => i.ConfiguredBy)
+                .WithMany(u => u.ConfiguredIntegrations)
+                .HasForeignKey(i => i.ConfiguredByUserId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            builder.ToTable("integrations");
         }
     }
 }

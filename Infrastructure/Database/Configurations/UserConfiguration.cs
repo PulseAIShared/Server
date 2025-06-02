@@ -34,16 +34,21 @@ namespace Infrastructure.Database.Configurations
                 .HasConversion<string>()
                 .IsRequired();
 
+            builder.Property(u => u.CompanyId)
+                .IsRequired() 
+                .HasMaxLength(36);
+
+            builder.Property(u => u.IsCompanyOwner)
+                .IsRequired()
+                .HasDefaultValue(false);
+
             // Relationships
             builder.HasOne(u => u.Company)
                 .WithMany(c => c.Users)
                 .HasForeignKey(u => u.CompanyId)
-                .OnDelete(DeleteBehavior.SetNull);
+                .OnDelete(DeleteBehavior.Restrict); 
 
-            builder.HasMany(u => u.Integrations)
-                .WithOne(i => i.User)
-                .HasForeignKey(i => i.UserId)
-                .OnDelete(DeleteBehavior.Cascade);
+            builder.ToTable("users");
         }
     }
 }

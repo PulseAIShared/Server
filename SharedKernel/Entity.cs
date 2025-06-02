@@ -3,6 +3,7 @@
 public abstract class Entity
 {
     public Guid Id { get; protected set; } = Guid.NewGuid();
+    public DateTime DateCreated { get; protected set; } = DateTime.UtcNow;
 
     private readonly List<IDomainEvent> _domainEvents = [];
 
