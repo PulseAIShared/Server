@@ -2,7 +2,6 @@
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using Microsoft.EntityFrameworkCore;
 
-
 namespace Infrastructure.Database.Configurations
 {
     public class UserConfiguration : IEntityTypeConfiguration<User>
@@ -34,19 +33,39 @@ namespace Infrastructure.Database.Configurations
                 .HasConversion<string>()
                 .IsRequired();
 
+            // Make CompanyId nullable to break circular dependency
             builder.Property(u => u.CompanyId)
-                .IsRequired() 
+                .IsRequired() // Keep this required for business logic
                 .HasMaxLength(36);
 
             builder.Property(u => u.IsCompanyOwner)
                 .IsRequired()
                 .HasDefaultValue(false);
 
-            // Relationships
+            builder.Property(u => u.PasswordHash)
+                .IsRequired();
+
+            builder.Property(u => u.RefreshToken)
+                .HasMaxLength(500);
+
+            builder.Property(u => u.RefreshTokenExpiryTime)
+                .HasColumnType("timestamp with time zone");
+
+            // Relationships - EXPLICIT NAVIGATION PROPERTIES
             builder.HasOne(u => u.Company)
                 .WithMany(c => c.Users)
                 .HasForeignKey(u => u.CompanyId)
-                .OnDelete(DeleteBehavior.Restrict); 
+                .OnDelete(DeleteBehavior.Restrict);
+
+            builder.HasMany(u => u.SentInvitations)
+                .WithOne(ci => ci.InvitedBy)
+                .HasForeignKey(ci => ci.InvitedByUserId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            builder.HasMany(u => u.ConfiguredIntegrations)
+                .WithOne(i => i.ConfiguredBy)
+                .HasForeignKey(i => i.ConfiguredByUserId)
+                .OnDelete(DeleteBehavior.Restrict);
 
             builder.ToTable("users");
         }

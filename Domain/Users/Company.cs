@@ -25,14 +25,14 @@ namespace Domain.Users
 
         public string? Country { get; set; }
 
-        public Guid OwnerId { get; set; }  // The user who owns this company
+        // Make OwnerId nullable to break circular dependency
+        public Guid? OwnerId { get; set; }
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
         public bool IsActive { get; set; } = true;
         public CompanyPlan Plan { get; set; } = CompanyPlan.Free;
-        public int MaxUsers { get; set; } = 5; // Based on plan
 
         // Navigation properties
-        public User Owner { get; set; } = null!;
+        public User? Owner { get; set; }
         public ICollection<User> Users { get; set; } = new List<User>();
         public ICollection<CompanyInvitation> Invitations { get; set; } = new List<CompanyInvitation>();
         public ICollection<Customer> Customers { get; set; } = new List<Customer>();
@@ -41,6 +41,22 @@ namespace Domain.Users
         public ICollection<Campaign> Campaigns { get; set; } = new List<Campaign>();
         public ICollection<ImportJob> ImportJobs { get; set; } = new List<ImportJob>();
 
+        // Business logic for user limits based on plan
+        public int MaxUsers => Plan switch
+        {
+            CompanyPlan.Free => 3,
+            CompanyPlan.Starter => 10,
+            CompanyPlan.Professional => 50,
+            CompanyPlan.Enterprise => int.MaxValue,
+            _ => 3
+        };
+
         public bool CanAddMoreUsers() => Users.Count < MaxUsers;
+
+        // Method to set owner after company creation
+        public void SetOwner(Guid userId)
+        {
+            OwnerId = userId;
+        }
     }
 }

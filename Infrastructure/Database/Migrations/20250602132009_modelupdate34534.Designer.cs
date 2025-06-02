@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using Infrastructure.Database;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -12,9 +13,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Infrastructure.Database.Migrations
 {
     [DbContext(typeof(ApplicationDbContext))]
-    partial class ApplicationDbContextModelSnapshot : ModelSnapshot
+    [Migration("20250602132009_modelupdate34534")]
+    partial class modelupdate34534
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -122,6 +125,10 @@ namespace Infrastructure.Database.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("company_id");
 
+                    b.Property<Guid?>("CompanyId1")
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id1");
+
                     b.Property<int>("ConvertedCount")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("integer")
@@ -199,6 +206,9 @@ namespace Infrastructure.Database.Migrations
 
                     b.HasIndex("CompanyId")
                         .HasDatabaseName("ix_campaigns_company_id");
+
+                    b.HasIndex("CompanyId1")
+                        .HasDatabaseName("ix_campaigns_company_id1");
 
                     b.HasIndex("ScheduledDate")
                         .HasDatabaseName("ix_campaigns_scheduled_date");
@@ -655,6 +665,10 @@ namespace Infrastructure.Database.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("company_id");
 
+                    b.Property<Guid?>("CompanyId1")
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id1");
+
                     b.Property<DateTime?>("CompletedAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("completed_at");
@@ -757,6 +771,9 @@ namespace Infrastructure.Database.Migrations
 
                     b.HasIndex("CompanyId")
                         .HasDatabaseName("ix_import_jobs_company_id");
+
+                    b.HasIndex("CompanyId1")
+                        .HasDatabaseName("ix_import_jobs_company_id1");
 
                     b.HasIndex("CreatedAt")
                         .HasDatabaseName("ix_import_jobs_created_at");
@@ -1352,8 +1369,7 @@ namespace Infrastructure.Database.Migrations
                         .HasColumnName("password_hash");
 
                     b.Property<string>("RefreshToken")
-                        .HasMaxLength(500)
-                        .HasColumnType("character varying(500)")
+                        .HasColumnType("text")
                         .HasColumnName("refresh_token");
 
                     b.Property<DateTime?>("RefreshTokenExpiryTime")
@@ -1415,11 +1431,16 @@ namespace Infrastructure.Database.Migrations
             modelBuilder.Entity("Domain.Campaigns.Campaign", b =>
                 {
                     b.HasOne("Domain.Users.Company", "Company")
-                        .WithMany("Campaigns")
+                        .WithMany()
                         .HasForeignKey("CompanyId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired()
                         .HasConstraintName("fk_campaigns_companies_company_id");
+
+                    b.HasOne("Domain.Users.Company", null)
+                        .WithMany("Campaigns")
+                        .HasForeignKey("CompanyId1")
+                        .HasConstraintName("fk_campaigns_companies_company_id1");
 
                     b.HasOne("Domain.Customers.CustomerSegment", "Segment")
                         .WithMany("Campaigns")
@@ -1483,11 +1504,16 @@ namespace Infrastructure.Database.Migrations
             modelBuilder.Entity("Domain.Imports.ImportJob", b =>
                 {
                     b.HasOne("Domain.Users.Company", "Company")
-                        .WithMany("ImportJobs")
+                        .WithMany()
                         .HasForeignKey("CompanyId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired()
                         .HasConstraintName("fk_import_jobs_companies_company_id");
+
+                    b.HasOne("Domain.Users.Company", null)
+                        .WithMany("ImportJobs")
+                        .HasForeignKey("CompanyId1")
+                        .HasConstraintName("fk_import_jobs_companies_company_id1");
 
                     b.HasOne("Domain.Users.User", "User")
                         .WithMany()

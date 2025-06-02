@@ -110,14 +110,14 @@ namespace Infrastructure.Database.Configurations
             builder.HasIndex(ij => new { ij.Status, ij.CreatedAt })
                 .HasDatabaseName("ix_import_jobs_status_created");
 
-            // Relationships
+    
             builder.HasOne(ij => ij.User)
-                .WithMany()
-                .HasForeignKey(ij => ij.UserId)
-                .OnDelete(DeleteBehavior.Cascade);
+               .WithMany() 
+               .HasForeignKey(ij => ij.UserId)
+               .OnDelete(DeleteBehavior.Cascade);
 
             builder.HasOne(ij => ij.Company)
-                .WithMany()
+                .WithMany(c => c.ImportJobs) 
                 .HasForeignKey(ij => ij.CompanyId)
                 .OnDelete(DeleteBehavior.Cascade);
 

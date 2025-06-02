@@ -1,6 +1,4 @@
-﻿
-
-using SharedKernel;
+﻿using SharedKernel;
 using System.ComponentModel.DataAnnotations;
 
 namespace Domain.Users;
@@ -18,29 +16,33 @@ public sealed class User : Entity
     public string Email { get; set; } = string.Empty;
 
     public string? Avatar { get; set; }
-    public string PasswordHash { get; set; }
+
+    [Required]
+    public string PasswordHash { get; set; } = string.Empty;
 
     [Required]
     public UserRole Role { get; set; } = UserRole.User;
 
+    // Make CompanyId required but allow temporary null during registration
     public Guid CompanyId { get; set; }
-    public bool IsCompanyOwner { get; set; } 
+
+    public bool IsCompanyOwner { get; set; }
 
     // Navigation properties
-    public Company Company { get; set; }
+    public Company? Company { get; set; }
     public ICollection<CompanyInvitation> SentInvitations { get; set; } = new List<CompanyInvitation>();
     public ICollection<Domain.Integration.Integration> ConfiguredIntegrations { get; set; } = new List<Domain.Integration.Integration>();
 
     public string? RefreshToken { get; set; }
     public DateTime? RefreshTokenExpiryTime { get; set; }
 
-
     public enum UserRole
     {
         User = 0,
-        CompanyOwner = 1,
-        Admin = 2
+        Admin = 1,
+        CompanyOwner = 2
     }
+
     public void SetRefreshToken(string token, DateTime expiryTime)
     {
         RefreshToken = token;
@@ -60,4 +62,3 @@ public sealed class User : Entity
         RefreshTokenExpiryTime = null;
     }
 }
-

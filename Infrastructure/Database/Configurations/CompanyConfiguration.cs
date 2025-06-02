@@ -38,8 +38,9 @@ namespace Infrastructure.Database.Configurations
             builder.Property(c => c.Country)
                 .HasMaxLength(2);
 
+            // Make OwnerId nullable - this breaks the circular dependency
             builder.Property(c => c.OwnerId)
-                .IsRequired()
+                .IsRequired(false)  // Allow null values
                 .HasMaxLength(36);
 
             builder.Property(c => c.CreatedAt)
@@ -50,13 +51,11 @@ namespace Infrastructure.Database.Configurations
                 .IsRequired()
                 .HasDefaultValue(true);
 
-                builder.Property(c => c.Plan)
+            builder.Property(c => c.Plan)
                 .HasConversion<string>()
                 .IsRequired()
                 .HasMaxLength(20)
                 .HasDefaultValue(CompanyPlan.Free);
-
-            // Remove MaxUsers column since it's now calculated
 
             // Indexes
             builder.HasIndex(c => c.Name)
@@ -69,11 +68,12 @@ namespace Infrastructure.Database.Configurations
             builder.HasIndex(c => c.OwnerId)
                 .HasDatabaseName("ix_companies_owner_id");
 
-            // Relationships
+            // Relationships - Owner is now optional
             builder.HasOne(c => c.Owner)
                 .WithMany()
                 .HasForeignKey(c => c.OwnerId)
-                .OnDelete(DeleteBehavior.Restrict);
+                .OnDelete(DeleteBehavior.SetNull) // Changed from Restrict to SetNull
+                .IsRequired(false); // Make the relationship optional
 
             builder.HasMany(c => c.Users)
                 .WithOne(u => u.Company)
@@ -93,6 +93,16 @@ namespace Infrastructure.Database.Configurations
             builder.HasMany(c => c.Integrations)
                 .WithOne(i => i.Company)
                 .HasForeignKey(i => i.CompanyId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            builder.HasMany(c => c.Campaigns)
+                .WithOne(camp => camp.Company)
+                .HasForeignKey(camp => camp.CompanyId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            builder.HasMany(c => c.ImportJobs)
+                .WithOne(ij => ij.Company)
+                .HasForeignKey(ij => ij.CompanyId)
                 .OnDelete(DeleteBehavior.Cascade);
 
             builder.ToTable("companies");
@@ -183,6 +193,4 @@ namespace Infrastructure.Database.Configurations
             builder.ToTable("company_invitations");
         }
     }
-
-
 }

@@ -8,8 +8,8 @@ using SharedKernel;
 using SharedKernel.Enums;
 using static Domain.Users.User;
 
-
 namespace Application.Users.Register;
+
 internal sealed class RegisterUserCommandHandler(
     IApplicationDbContext context,
     IPasswordHasher passwordHasher)
@@ -57,11 +57,39 @@ internal sealed class RegisterUserCommandHandler(
                     UserErrors.CompanyUserLimitReached);
             }
 
-            // Mark invitation as accepted (will be set after user creation)
+            // Create user for existing company
+            var invitedUser = new User
+            {
+                Email = command.Email,
+                FirstName = command.FirstName,
+                LastName = command.LastName,
+                PasswordHash = passwordHasher.Hash(command.Password),
+                Role = userRole,
+                IsCompanyOwner = false,
+                CompanyId = company.Id
+            };
+
+            context.Users.Add(invitedUser);
+
+            // Mark invitation as accepted
+            invitation.Accept(invitedUser.Id);
+
+            invitedUser.Raise(new UserRegisteredDomainEvent(invitedUser.Id));
+
+            await context.SaveChangesAsync(cancellationToken);
+
+            return new RegisterUserResponse(
+                invitedUser.Id,
+                company.Id,
+                company.Name,
+                userRole,
+                false
+            );
         }
         // Scenario 2: Creating new company (user becomes owner)
         else if (!string.IsNullOrEmpty(command.CompanyName))
         {
+            // Step 1: Create company without owner first
             company = new Company
             {
                 Name = command.CompanyName,
@@ -69,58 +97,46 @@ internal sealed class RegisterUserCommandHandler(
                 Domain = command.CompanyDomain,
                 Country = command.CompanyCountry ?? "US",
                 Industry = command.CompanyIndustry,
-                Plan = CompanyPlan.Free // Always start with free plan
+                Plan = CompanyPlan.Free,
+                OwnerId = null // Don't set owner yet - this breaks the circular dependency
             };
 
             context.Companies.Add(company);
-            userRole = User.UserRole.CompanyOwner;
-            isCompanyOwner = true;
+            await context.SaveChangesAsync(cancellationToken); // Save company first
+
+            // Step 2: Create user with the company ID
+            var user = new User
+            {
+                Email = command.Email,
+                FirstName = command.FirstName,
+                LastName = command.LastName,
+                PasswordHash = passwordHasher.Hash(command.Password),
+                Role = UserRole.CompanyOwner,
+                IsCompanyOwner = true,
+                CompanyId = company.Id
+            };
+
+            context.Users.Add(user);
+            await context.SaveChangesAsync(cancellationToken); // Save user
+
+            // Step 3: Update company with owner ID
+            company.SetOwner(user.Id);
+            await context.SaveChangesAsync(cancellationToken); // Final save
+
+            user.Raise(new UserRegisteredDomainEvent(user.Id));
+
+            return new RegisterUserResponse(
+                user.Id,
+                company.Id,
+                company.Name,
+                UserRole.CompanyOwner,
+                true
+            );
         }
         else
         {
             return Result.Failure<RegisterUserResponse>(
                 UserErrors.CompanyInfoOrInvitationRequired);
         }
-
-        // Create the user
-        var user = new User
-        {
-            Email = command.Email,
-            FirstName = command.FirstName,
-            LastName = command.LastName,
-            PasswordHash = passwordHasher.Hash(command.Password),
-            Role = userRole,
-            IsCompanyOwner = isCompanyOwner,
-        };
-
-        // Set company relationships
-        if (isCompanyOwner)
-        {
-            company.OwnerId = user.Id;
-            user.CompanyId = company.Id;
-        }
-        else
-        {
-            user.CompanyId = company.Id;
-
-            // Accept the invitation
-            var invitation = await context.CompanyInvitations
-                .FirstAsync(i => i.InvitationToken == command.InvitationToken!,
-                    cancellationToken);
-            invitation.Accept(user.Id);
-        }
-
-        context.Users.Add(user);
-        user.Raise(new UserRegisteredDomainEvent(user.Id));
-
-        await context.SaveChangesAsync(cancellationToken);
-
-        return new RegisterUserResponse(
-            user.Id,
-            company.Id,
-            company.Name,
-            userRole,
-            isCompanyOwner
-        );
     }
 }
