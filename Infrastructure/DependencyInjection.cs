@@ -16,7 +16,9 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.IdentityModel.Tokens;
+using Npgsql;
 using SharedKernel;
 
 namespace Infrastructure;
@@ -52,7 +54,13 @@ public static class DependencyInjection
         }
 
         // Import service
-        services.AddScoped<ICustomerImportService, CustomerImportService>();
+        services.AddScoped<ICustomerImportService>(provider =>
+       new CustomerImportService(
+           provider,
+           provider.GetRequiredService<IFileStorageService>(),
+           provider.GetRequiredService<IBackgroundJobClient>(), 
+           provider.GetRequiredService<ILogger<CustomerImportService>>()));
+
         services.AddScoped<IImportBackgroundService, ImportBackgroundService>();
         // Notification service
         services.AddScoped<INotificationService, NotificationService>();
@@ -64,11 +72,19 @@ public static class DependencyInjection
     {
         string? connectionString = configuration.GetConnectionString("Database");
 
-        services.AddDbContext<ApplicationDbContext>(
-            options => options
-                .UseNpgsql(connectionString, npgsqlOptions =>
+        services.AddDbContext<ApplicationDbContext>(options =>
+        {
+            var dataSourceBuilder = new NpgsqlDataSourceBuilder(connectionString);
+
+            // Enable dynamic JSON serialization for Dictionary<string, object> and similar types
+            dataSourceBuilder.EnableDynamicJson();
+
+            var dataSource = dataSourceBuilder.Build();
+
+            options.UseNpgsql(dataSource, npgsqlOptions =>
                     npgsqlOptions.MigrationsHistoryTable(HistoryRepository.DefaultTableName, Schemas.Default))
-                .UseSnakeCaseNamingConvention());
+                .UseSnakeCaseNamingConvention();
+        });
 
         services.AddScoped<IApplicationDbContext>(sp => sp.GetRequiredService<ApplicationDbContext>());
 

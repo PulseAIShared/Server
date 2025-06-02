@@ -2,6 +2,7 @@
 using Domain.Customers;
 using Domain.Imports;
 using Domain.Notification;
+using Domain.Segments;
 using Domain.Todos;
 using Domain.Users;
 using Microsoft.EntityFrameworkCore;
@@ -15,6 +16,9 @@ public interface IApplicationDbContext
 
     DbSet<ImportJob> ImportJobs { get; }
     DbSet<Customer> Customers { get; }
+    DbSet<CustomerActivity> CustomerActivities { get; }
+    DbSet<ChurnPrediction> ChurnPredictions { get; }
+    DbSet<CustomerSegment> CustomerSegments { get; }
     DbSet<Company> Companies { get; }
     DbSet<CompanyInvitation> CompanyInvitations { get; }
     DbSet<TodoItem> TodoItems { get; }

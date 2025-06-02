@@ -7,12 +7,14 @@ using Microsoft.Extensions.Logging;
 using SharedKernel.Enums;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
+using Hangfire;
 
 namespace Infrastructure.Services;
 
 public class CustomerImportService(
-    IServiceProvider serviceProvider, // Keep serviceProvider for creating scopes
+    IServiceProvider serviceProvider,
     IFileStorageService fileStorageService,
+    IBackgroundJobClient backgroundJobClient, // Add this dependency
     ILogger<CustomerImportService> logger) : ICustomerImportService
 {
     private const int BATCH_SIZE = 100;
@@ -76,6 +78,23 @@ public class CustomerImportService(
             job.Status = ImportJobStatus.Pending;
             await context.SaveChangesAsync();
 
+            // AUTO-PROCESS: Queue processing job immediately after successful validation
+            if (allErrors.Count == 0 || !allErrors.Any(e => IsCriticalError(e)))
+            {
+                logger.LogInformation("Validation successful for job {JobId}, auto-queuing processing", jobId);
+
+                var processingJobId = backgroundJobClient.Enqueue<IImportBackgroundService>(
+                    "imports",
+                    service => service.ProcessImportAsync(jobId));
+
+                logger.LogInformation("Auto-queued processing job {HangfireJobId} for import {ImportJobId}",
+                    processingJobId, jobId);
+            }
+            else
+            {
+                logger.LogWarning("Import job {JobId} has critical errors, skipping auto-processing", jobId);
+            }
+
             logger.LogInformation("Validation completed for import job {JobId}. Total: {TotalRecords}, Errors: {ErrorCount}",
                 jobId, totalRecords, allErrors.Count);
         }
@@ -84,8 +103,21 @@ public class CustomerImportService(
             logger.LogError(ex, "Failed to validate import file for job {JobId}", jobId);
             job.Fail($"Validation failed: {ex.Message}");
             await context.SaveChangesAsync();
-            throw; // Re-throw for Hangfire retry handling
+            throw;
         }
+    }
+
+    private static bool IsCriticalError(ImportError error)
+    {
+        // Define what constitutes a critical error that should stop processing
+        var criticalMessages = new[]
+        {
+            "Email is required",
+            "Invalid email format",
+            "Either first name or last name is required"
+        };
+
+        return criticalMessages.Any(msg => error.ErrorMessage.Contains(msg, StringComparison.OrdinalIgnoreCase));
     }
 
     public async Task ProcessImportFileAsync(Guid jobId)
