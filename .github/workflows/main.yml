@@ -23,7 +23,7 @@ jobs:
           username: ${{ secrets.DOCKER_HUB_USERNAME }}
           password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
       
-      # Step 4: Create nginx configuration for SSL
+      # Step 4: Create nginx configuration (FIXED)
       - name: Create nginx configuration
         run: |
           cat > nginx.conf << 'EOL'
@@ -225,7 +225,7 @@ jobs:
             if [ ! -f "/var/lib/docker/volumes/pulseai_letsencrypt/_data/live/${DOMAIN_NAME}/fullchain.pem" ]; then
               echo "🔒 Getting SSL certificate for ${DOMAIN_NAME}..."
               
-              # First, ensure certbot container can access the web root
+              # Get SSL certificate
               docker compose run --rm certbot certonly \
                 --webroot \
                 --webroot-path=/var/www/certbot \
@@ -342,7 +342,6 @@ jobs:
           else
             echo "❌ API verification failed - Response code: $HTTPS_RESPONSE"
             echo "Check the logs above for more details"
-            # Don't exit 1 here so we can see all the debug info
           fi
           
           # Test CORS
