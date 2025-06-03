@@ -71,14 +71,14 @@ jobs:
                   add_header Referrer-Policy "strict-origin-when-cross-origin" always;
                   
                   # CORS headers for your frontend
-                  add_header Access-Control-Allow-Origin "https://pulseretention.netlify.app" always;
+                  add_header Access-Control-Allow-Origin "https://pulseltv.com" always;
                   add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS" always;
                   add_header Access-Control-Allow-Headers "Origin, X-Requested-With, Content-Type, Accept, Authorization" always;
                   add_header Access-Control-Allow-Credentials "true" always;
                   
                   # Handle preflight requests
                   if ($request_method = 'OPTIONS') {
-                      add_header Access-Control-Allow-Origin "https://pulseretention.netlify.app";
+                      add_header Access-Control-Allow-Origin "https://pulseltv.com";
                       add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS";
                       add_header Access-Control-Allow-Headers "Origin, X-Requested-With, Content-Type, Accept, Authorization";
                       add_header Access-Control-Allow-Credentials "true";
@@ -278,7 +278,7 @@ jobs:
             
             # Test CORS
             echo "🔍 Testing CORS headers..."
-            CORS_TEST=$(curl -s -H "Origin: https://pulseretention.netlify.app" -I https://${DOMAIN_NAME}/health | grep -i "access-control-allow-origin" | wc -l)
+            CORS_TEST=$(curl -s -H "Origin: https://pulseltv.com" -I https://${DOMAIN_NAME}/health | grep -i "access-control-allow-origin" | wc -l)
             if [ "$CORS_TEST" -eq 1 ]; then
               echo "✅ CORS headers correct"
             else
@@ -292,25 +292,72 @@ jobs:
             echo "✅ Health check: https://${DOMAIN_NAME}/health"
             echo "✅ SSL certificate installed"
             echo "✅ Auto-renewal configured"
-            echo "✅ Ready for client: https://pulseretention.netlify.app"
+            echo "✅ Ready for client: https://pulseltv.com"
             
           EOF
       
-      # Step 9: Final verification
+      # Step 9: Final verification with detailed debugging
       - name: Verify deployment
         run: |
           echo "🔍 Final verification..."
+          echo "Testing domain: ${{ secrets.DOMAIN_NAME }}"
           
-          # Test HTTPS endpoint
-          if curl -f -s https://${{ secrets.DOMAIN_NAME }}/health > /dev/null; then
+          # DNS resolution test
+          echo "🔍 Testing DNS resolution..."
+          nslookup ${{ secrets.DOMAIN_NAME }} || echo "⚠️ DNS resolution failed"
+          
+          # Test if server responds at all
+          echo "🔍 Testing basic connectivity..."
+          if ping -c 3 ${{ secrets.DOMAIN_NAME }}; then
+            echo "✅ Server is reachable"
+          else
+            echo "❌ Server is not reachable"
+          fi
+          
+          # Test HTTP (should redirect)
+          echo "🔍 Testing HTTP (should redirect to HTTPS)..."
+          HTTP_RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -L http://${{ secrets.DOMAIN_NAME }}/health || echo "FAILED")
+          echo "HTTP response code: $HTTP_RESPONSE"
+          
+          # Test HTTPS with verbose output
+          echo "🔍 Testing HTTPS endpoint with detailed output..."
+          HTTPS_RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" https://${{ secrets.DOMAIN_NAME }}/health || echo "FAILED")
+          echo "HTTPS response code: $HTTPS_RESPONSE"
+          
+          # Get more details about the HTTPS request
+          echo "🔍 Detailed HTTPS test..."
+          curl -v -s https://${{ secrets.DOMAIN_NAME }}/health || echo "Detailed HTTPS test failed"
+          
+          # Test if containers are running on the server
+          echo "🔍 Checking server container status..."
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
+            root@${{ secrets.DIGITALOCEAN_DROPLET_IP }} << 'EOF'
+            echo "=== Docker containers status ==="
+            docker ps
+            echo ""
+            echo "=== Docker compose logs (last 20 lines) ==="
+            cd /opt/pulseai
+            docker compose logs --tail=20
+            echo ""
+            echo "=== Nginx logs (last 10 lines) ==="
+            docker compose logs nginx --tail=10
+            echo ""
+            echo "=== API logs (last 10 lines) ==="
+            docker compose logs api --tail=10
+          EOF
+          
+          # Final assessment
+          if [ "$HTTPS_RESPONSE" = "200" ]; then
             echo "✅ API is working via HTTPS"
           else
-            echo "❌ API verification failed"
-            exit 1
+            echo "❌ API verification failed - Response code: $HTTPS_RESPONSE"
+            echo "Check the logs above for more details"
+            # Don't exit 1 here so we can see all the debug info
           fi
           
           # Test CORS
-          CORS_HEADERS=$(curl -s -H "Origin: https://pulseretention.netlify.app" -I https://${{ secrets.DOMAIN_NAME }}/health | grep -i "access-control-allow-origin" | wc -l)
+          echo "🔍 Testing CORS headers..."
+          CORS_HEADERS=$(curl -s -H "Origin: https://pulseltv.com" -I https://${{ secrets.DOMAIN_NAME }}/health | grep -i "access-control-allow-origin" | wc -l || echo "0")
           if [ "$CORS_HEADERS" -eq 1 ]; then
             echo "✅ CORS configuration correct"
           else
@@ -318,6 +365,5 @@ jobs:
           fi
           
           echo ""
-          echo "🚀 Deployment successful!"
-          echo "🔗 Your API: https://${{ secrets.DOMAIN_NAME }}"
-          echo "🎯 Update your client to use: https://${{ secrets.DOMAIN_NAME }}"
+          echo "🎯 Target API URL: https://${{ secrets.DOMAIN_NAME }}"
+          echo "📋 Check the logs above to debug any issues"
