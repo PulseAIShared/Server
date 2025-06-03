@@ -25,14 +25,11 @@ public static class DependencyInjection
 
             options.AddPolicy("Production", policy =>
             {
-                policy.WithOrigins(
-                    "https://pulseretention.netlify.app",
-                    "http://167.71.17.59",
-                    "https://167.71.17.59"
-                )
-                .AllowAnyHeader()
-                .AllowAnyMethod()
-                .AllowCredentials();
+                policy.WithOrigins("https://pulseltv.com")
+                      .AllowAnyHeader()
+                      .AllowAnyMethod()
+                      .AllowCredentials()
+                      .SetIsOriginAllowed(origin => origin == "https://pulseltv.com");
             });
         });
 
