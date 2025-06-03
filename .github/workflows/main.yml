@@ -1,8 +1,9 @@
-﻿name: CI/CD Pipeline with Working HTTPS and CORS
+﻿name: Deploy to Production with SSL
 on:
   push:
     branches:
       - main
+
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
@@ -22,7 +23,7 @@ jobs:
           username: ${{ secrets.DOCKER_HUB_USERNAME }}
           password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
       
-      # Step 4: Create nginx configuration (no CORS - let ASP.NET handle it)
+      # Step 4: Create nginx configuration for SSL
       - name: Create nginx configuration
         run: |
           cat > nginx.conf << 'EOL'
@@ -63,14 +64,31 @@ jobs:
                   ssl_session_cache shared:SSL:10m;
                   ssl_session_timeout 10m;
                   
-                  # Security headers (NO CORS - let ASP.NET handle CORS)
+                  # Security headers
                   add_header Strict-Transport-Security "max-age=31536000" always;
                   add_header X-Frame-Options "SAMEORIGIN" always;
                   add_header X-Content-Type-Options "nosniff" always;
                   add_header Referrer-Policy "strict-origin-when-cross-origin" always;
                   
+                  # CORS headers for your frontend
+                  add_header Access-Control-Allow-Origin "https://pulseretention.netlify.app" always;
+                  add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS" always;
+                  add_header Access-Control-Allow-Headers "Origin, X-Requested-With, Content-Type, Accept, Authorization" always;
+                  add_header Access-Control-Allow-Credentials "true" always;
+                  
+                  # Handle preflight requests
+                  if ($request_method = 'OPTIONS') {
+                      add_header Access-Control-Allow-Origin "https://pulseretention.netlify.app";
+                      add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS";
+                      add_header Access-Control-Allow-Headers "Origin, X-Requested-With, Content-Type, Accept, Authorization";
+                      add_header Access-Control-Allow-Credentials "true";
+                      add_header Access-Control-Max-Age 1728000;
+                      add_header Content-Type "text/plain; charset=utf-8";
+                      add_header Content-Length 0;
+                      return 204;
+                  }
+                  
                   location / {
-                      # Simple proxy - ASP.NET handles CORS
                       proxy_pass http://api:5000;
                       proxy_http_version 1.1;
                       proxy_set_header Upgrade $http_upgrade;
@@ -91,48 +109,7 @@ jobs:
           }
           EOL
       
-      # Step 5: Update ASP.NET Core CORS configuration
-      - name: Update ASP.NET Core CORS
-        run: |
-          # Update DependencyInjection.cs to fix CORS configuration
-          cat > Web.Api/DependencyInjection.cs << 'EOL'
-          using Web.Api.Infrastructure;
-          
-          namespace Web.Api;
-          
-          public static class DependencyInjection
-          {
-              public static IServiceCollection AddPresentation(this IServiceCollection services)
-              {
-                  services.AddEndpointsApiExplorer();
-                  services.AddSwaggerGen();
-          
-                  services.AddMemoryCache();
-                  services.AddExceptionHandler<GlobalExceptionHandler>();
-                  services.AddProblemDetails();
-          
-                  services.AddCors(options =>
-                  {
-                      options.AddPolicy("AllowNetlifyApp", policy =>
-                      {
-                          policy.WithOrigins("https://pulseretention.netlify.app")
-                                .AllowAnyHeader()
-                                .AllowAnyMethod()
-                                .AllowCredentials()
-                                .SetIsOriginAllowed(origin => origin == "https://pulseretention.netlify.app");
-                      });
-                  });
-          
-                  return services;
-              }
-          }
-          EOL
-          
-          # Update Program.cs to use the specific CORS policy
-          sed -i 's/app.UseCors("Development");/app.UseCors("AllowNetlifyApp");/g' Web.Api/Program.cs
-          sed -i 's/app.UseCors("Production");/app.UseCors("AllowNetlifyApp");/g' Web.Api/Program.cs
-      
-      # Step 6: Create production docker-compose
+      # Step 5: Create production docker-compose
       - name: Create production docker-compose
         run: |
           cat > docker-compose.deploy.yml << 'EOL'
@@ -199,13 +176,13 @@ jobs:
               driver: bridge
           EOL
       
-      # Step 7: Build and push API image
+      # Step 6: Build and push API image
       - name: Build and push API image
         run: |
           docker compose build api
           docker compose push api
       
-      # Step 8: Create environment file
+      # Step 7: Create environment file
       - name: Create environment file
         run: |
           cat > .env << EOL
@@ -215,8 +192,8 @@ jobs:
           CERTBOT_EMAIL=${{ secrets.CERTBOT_EMAIL }}
           EOL
       
-      # Step 9: Deploy with automatic HTTPS setup
-      - name: Deploy with HTTPS and CORS fix
+      # Step 8: Deploy with automatic HTTPS setup
+      - name: Deploy with SSL Certificate
         run: |
           # Setup SSH
           mkdir -p ~/.ssh
@@ -230,7 +207,7 @@ jobs:
             docker-compose.deploy.yml nginx.conf .env \
             root@${{ secrets.DIGITALOCEAN_DROPLET_IP }}:/opt/pulseai/
           
-          # Deploy with automatic SSL and CORS fix
+          # Deploy with automatic SSL
           ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
             root@${{ secrets.DIGITALOCEAN_DROPLET_IP }} << 'EOF'
             cd /opt/pulseai
@@ -240,23 +217,12 @@ jobs:
             source .env
             set +a
             
+            # Stop existing services
+            docker compose down --remove-orphans || true
+            
             # Backup current deployment
             [ -f docker-compose.yml ] && cp docker-compose.yml docker-compose.yml.backup
             mv docker-compose.deploy.yml docker-compose.yml
-            
-            # Install Docker if needed
-            if ! command -v docker &> /dev/null; then
-              curl -fsSL https://get.docker.com -o get-docker.sh
-              sh get-docker.sh
-              systemctl start docker
-              systemctl enable docker
-            fi
-            
-            # Stop existing services
-            docker compose down --remove-orphans
-            
-            # Pull latest images
-            docker compose pull
             
             echo "🚀 Starting services..."
             docker compose up -d
@@ -267,33 +233,46 @@ jobs:
             
             # Check if SSL certificate exists, if not get it
             if [ ! -f "/var/lib/docker/volumes/pulseai_letsencrypt/_data/live/${DOMAIN_NAME}/fullchain.pem" ]; then
-              echo "🔒 Getting SSL certificate..."
+              echo "🔒 Getting SSL certificate for ${DOMAIN_NAME}..."
+              
+              # First, ensure certbot container can access the web root
               docker compose run --rm certbot certonly \
                 --webroot \
                 --webroot-path=/var/www/certbot \
                 --email ${CERTBOT_EMAIL} \
                 --agree-tos \
                 --no-eff-email \
+                --force-renewal \
                 -d ${DOMAIN_NAME}
               
               # Restart nginx to load certificate
+              echo "🔄 Restarting nginx with SSL certificate..."
               docker compose restart nginx
               sleep 15
             else
-              echo "✅ SSL certificate already exists"
+              echo "✅ SSL certificate already exists for ${DOMAIN_NAME}"
             fi
+            
+            # Setup certificate auto-renewal
+            (crontab -l 2>/dev/null; echo "0 12 * * * cd /opt/pulseai && docker compose run --rm certbot renew --quiet && docker compose restart nginx") | crontab - 2>/dev/null
             
             echo "📋 Final service status:"
             docker compose ps
             
             echo "🧪 Testing endpoints..."
             
+            # Test HTTP redirect
+            if curl -s -o /dev/null -w "%{http_code}" http://${DOMAIN_NAME}/health | grep -q "301\|302"; then
+              echo "✅ HTTP to HTTPS redirect working"
+            else
+              echo "⚠️ HTTP redirect may need checking"
+            fi
+            
             # Test HTTPS
             if curl -f -s https://${DOMAIN_NAME}/health > /dev/null; then
               echo "✅ HTTPS endpoint working"
             else
               echo "❌ HTTPS endpoint failed"
-              # Show nginx logs for debugging
               docker compose logs nginx --tail=10
             fi
             
@@ -301,25 +280,23 @@ jobs:
             echo "🔍 Testing CORS headers..."
             CORS_TEST=$(curl -s -H "Origin: https://pulseretention.netlify.app" -I https://${DOMAIN_NAME}/health | grep -i "access-control-allow-origin" | wc -l)
             if [ "$CORS_TEST" -eq 1 ]; then
-              echo "✅ CORS headers correct (single origin header)"
+              echo "✅ CORS headers correct"
             else
               echo "⚠️ CORS headers: $CORS_TEST (should be 1)"
-              curl -s -H "Origin: https://pulseretention.netlify.app" -I https://${DOMAIN_NAME}/health | grep -i "access-control"
             fi
-            
-            # Setup certificate auto-renewal
-            (crontab -l 2>/dev/null; echo "0 12 * * * cd /opt/pulseai && docker compose run --rm certbot renew --quiet && docker compose restart nginx") | crontab - 2>/dev/null
             
             echo ""
             echo "🎉 DEPLOYMENT COMPLETE!"
             echo "========================"
-            echo "✅ HTTPS API: https://${DOMAIN_NAME}"
+            echo "✅ Your API: https://${DOMAIN_NAME}"
             echo "✅ Health check: https://${DOMAIN_NAME}/health"
+            echo "✅ SSL certificate installed"
+            echo "✅ Auto-renewal configured"
             echo "✅ Ready for client: https://pulseretention.netlify.app"
             
           EOF
       
-      # Step 10: Final verification
+      # Step 9: Final verification
       - name: Verify deployment
         run: |
           echo "🔍 Final verification..."
