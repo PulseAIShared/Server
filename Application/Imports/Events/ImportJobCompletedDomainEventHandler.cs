@@ -37,12 +37,8 @@ namespace Application.Imports.Events
                 Category = NotificationCategory.Import,
                 Title = GetNotificationTitle(domainEvent.Status),
                 Message = GetNotificationMessage(domainEvent),
-                ActionUrl = domainEvent.Status == ImportJobStatus.Failed && domainEvent.FailedRecords > 0
-                    ? $"/imports/{domainEvent.ImportJobId}/errors"
-                    : null,
-                ActionText = domainEvent.Status == ImportJobStatus.Failed && domainEvent.FailedRecords > 0
-                    ? "Download Error Report"
-                    : null,
+                ActionUrl =  $"/imports/{domainEvent.ImportJobId}", 
+                ActionText = "View full report",
                 Metadata = new Dictionary<string, object>
                 {
                     ["importJobId"] = domainEvent.ImportJobId,
@@ -78,12 +74,8 @@ namespace Application.Imports.Events
                     Summary = domainEvent.Summary
                 },
                 Timestamp = DateTime.UtcNow,
-                ActionUrl = domainEvent.Status == ImportJobStatus.Failed && domainEvent.FailedRecords > 0
-                    ? $"/imports/{domainEvent.ImportJobId}/errors"
-                    : null,
-                ActionText = domainEvent.Status == ImportJobStatus.Failed && domainEvent.FailedRecords > 0
-                    ? "Download Error Report"
-                    : null
+                ActionUrl = $"/imports/{domainEvent.ImportJobId}",
+                ActionText = "View full report",
             };
 
             await notificationService.SendNotificationToUserAsync(

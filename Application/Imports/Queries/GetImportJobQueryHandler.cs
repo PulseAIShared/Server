@@ -14,9 +14,9 @@ using System.Threading.Tasks;
 namespace Application.Imports.Queries
 {
     internal sealed class GetImportJobQueryHandler(
-      IApplicationDbContext context,
-      IUserContext userContext)
-      : IQueryHandler<GetImportJobQuery, ImportJobResponse>
+        IApplicationDbContext context,
+        IUserContext userContext)
+        : IQueryHandler<GetImportJobQuery, ImportJobResponse>
     {
         public async Task<Result<ImportJobResponse>> Handle(GetImportJobQuery query, CancellationToken cancellationToken)
         {
@@ -45,6 +45,8 @@ namespace Application.Imports.Queries
                 SuccessfulRecords = importJob.SuccessfulRecords,
                 FailedRecords = importJob.FailedRecords,
                 SkippedRecords = importJob.SkippedRecords,
+                UpdatedRecords = importJob.UpdatedRecords, // New
+                NewRecords = importJob.NewRecords, // New
                 ErrorMessage = importJob.ErrorMessage,
                 CreatedAt = importJob.CreatedAt,
                 StartedAt = importJob.StartedAt,
@@ -59,6 +61,20 @@ namespace Application.Imports.Queries
                         FieldName = e.FieldName,
                         RawData = e.RawData,
                         ErrorTime = e.ErrorTime
+                    }).ToList(),
+                Updates = importJob.GetImportUpdates() // New
+                    .Select(u => new ImportUpdateResponse
+                    {
+                        RowNumber = u.RowNumber,
+                        Email = u.Email,
+                        CustomerName = u.CustomerName,
+                        UpdatedFields = u.UpdatedFields.Select(f => new FieldUpdateResponse
+                        {
+                            FieldName = f.FieldName,
+                            OldValue = f.OldValue,
+                            NewValue = f.NewValue
+                        }).ToList(),
+                        UpdateTime = u.UpdateTime
                     }).ToList()
             };
 

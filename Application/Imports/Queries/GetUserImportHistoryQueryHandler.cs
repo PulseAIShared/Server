@@ -14,9 +14,9 @@ using System.Threading.Tasks;
 namespace Application.Imports.Queries
 {
     internal sealed class GetUserImportHistoryQueryHandler(
-      IApplicationDbContext context,
-      IUserContext userContext)
-      : IQueryHandler<GetUserImportHistoryQuery, PagedResult<ImportJobSummaryResponse>>
+        IApplicationDbContext context,
+        IUserContext userContext)
+        : IQueryHandler<GetUserImportHistoryQuery, PagedResult<ImportJobSummaryResponse>>
     {
         public async Task<Result<PagedResult<ImportJobSummaryResponse>>> Handle(GetUserImportHistoryQuery query, CancellationToken cancellationToken)
         {
@@ -38,6 +38,9 @@ namespace Application.Imports.Queries
                     TotalRecords = ij.TotalRecords,
                     SuccessfulRecords = ij.SuccessfulRecords,
                     FailedRecords = ij.FailedRecords,
+                    SkippedRecords = ij.SkippedRecords,
+                    UpdatedRecords = ij.UpdatedRecords, // New
+                    NewRecords = ij.NewRecords, // New
                     CreatedAt = ij.CreatedAt,
                     CompletedAt = ij.CompletedAt,
                     ErrorMessage = ij.ErrorMessage

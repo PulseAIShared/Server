@@ -1,11 +1,11 @@
-﻿using Application.Abstractions.Data;
+﻿// Infrastructure/Services/CustomerImportService.cs - Complete implementation
+using Application.Abstractions.Data;
 using Application.Services;
 using Domain.Customers;
 using Domain.Imports;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using SharedKernel.Enums;
-using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Hangfire;
 
@@ -14,7 +14,7 @@ namespace Infrastructure.Services;
 public class CustomerImportService(
     IServiceProvider serviceProvider,
     IFileStorageService fileStorageService,
-    IBackgroundJobClient backgroundJobClient, // Add this dependency
+    IBackgroundJobClient backgroundJobClient,
     ILogger<CustomerImportService> logger) : ICustomerImportService
 {
     private const int BATCH_SIZE = 100;
@@ -22,7 +22,6 @@ public class CustomerImportService(
 
     public async Task ValidateImportFileAsync(Guid jobId, bool skipDuplicates)
     {
-        // Create a new scope for this operation
         using var scope = serviceProvider.CreateScope();
         var context = scope.ServiceProvider.GetRequiredService<IApplicationDbContext>();
 
@@ -35,7 +34,8 @@ public class CustomerImportService(
 
         try
         {
-            logger.LogInformation("Starting validation for import job {JobId}", jobId);
+            logger.LogInformation("Starting validation for import job {JobId} (skipDuplicates: {SkipDuplicates})",
+                jobId, skipDuplicates);
 
             job.Status = ImportJobStatus.Validating;
             await context.SaveChangesAsync();
@@ -50,16 +50,21 @@ public class CustomerImportService(
             job.TotalRecords = totalRecords;
             var allErrors = new List<ImportError>(parseErrors);
 
-            // Check for duplicates if not skipping
-            if (!skipDuplicates)
+            // Check for duplicates based on skipDuplicates setting
+            var duplicateInfo = await AnalyzeDuplicatesAsync(customers, job.CompanyId, context, skipDuplicates);
+
+            if (skipDuplicates)
             {
-                logger.LogInformation("Checking for duplicate customers...");
-                var duplicateErrors = await CheckForDuplicatesAsync(customers, job.CompanyId, context);
-                allErrors.AddRange(duplicateErrors);
-                logger.LogInformation("Found {DuplicateCount} duplicate customers", duplicateErrors.Count);
+                logger.LogInformation("Skip duplicates enabled: {SkippedCount} existing customers will be skipped",
+                    duplicateInfo.SkippedEmails.Count);
+            }
+            else
+            {
+                logger.LogInformation("Skip duplicates disabled: {UpdateCount} existing customers will be updated",
+                    duplicateInfo.ExistingEmails.Count);
             }
 
-            // Store validation errors
+            // Store validation errors (only actual parsing/validation errors, not duplicates)
             if (allErrors.Count > 0)
             {
                 job.SetValidationErrors(allErrors);
@@ -107,22 +112,8 @@ public class CustomerImportService(
         }
     }
 
-    private static bool IsCriticalError(ImportError error)
-    {
-        // Define what constitutes a critical error that should stop processing
-        var criticalMessages = new[]
-        {
-            "Email is required",
-            "Invalid email format",
-            "Either first name or last name is required"
-        };
-
-        return criticalMessages.Any(msg => error.ErrorMessage.Contains(msg, StringComparison.OrdinalIgnoreCase));
-    }
-
     public async Task ProcessImportFileAsync(Guid jobId)
     {
-        // Create a new scope for this operation
         using var scope = serviceProvider.CreateScope();
         var context = scope.ServiceProvider.GetRequiredService<IApplicationDbContext>();
 
@@ -138,17 +129,13 @@ public class CustomerImportService(
             logger.LogInformation("Starting processing for import job {JobId}", jobId);
 
             job.Start();
-
-            // Raise job started event
             job.Raise(new ImportJobStartedDomainEvent(
-                job.Id,
-                job.UserId,
-                job.FileName,
-                job.Type,
-                job.ImportSource
-            ));
+                job.Id, job.UserId, job.FileName, job.Type, job.ImportSource));
 
             await context.SaveChangesAsync();
+
+            // Determine skipDuplicates from the job (stored during creation)
+            bool skipDuplicates = job.ShouldSkipDuplicates();
 
             // Read and parse CSV file again
             var fileContent = await fileStorageService.ReadFileAsync(job.FilePath);
@@ -161,7 +148,10 @@ public class CustomerImportService(
                 SuccessfulRecords = 0,
                 FailedRecords = 0,
                 SkippedRecords = 0,
-                Errors = new List<ImportError>()
+                UpdatedRecords = 0,
+                NewRecords = 0,
+                Errors = new List<ImportError>(),
+                Updates = new List<ImportUpdate>()
             };
 
             // Get existing customers for duplicate checking
@@ -170,38 +160,34 @@ public class CustomerImportService(
                 .Where(c => c.CompanyId == job.CompanyId && emails.Contains(c.Email.ToLower()))
                 .ToDictionaryAsync(c => c.Email.ToLower(), c => c);
 
-            logger.LogInformation("Processing {TotalCustomers} customers, {ExistingCount} already exist",
-                customers.Count, existingCustomers.Count);
+            logger.LogInformation("Processing {TotalCustomers} customers, {ExistingCount} already exist (skipDuplicates: {SkipDuplicates})",
+                customers.Count, existingCustomers.Count, skipDuplicates);
 
-            // Process in batches to avoid memory issues
+            // Process in batches
             for (int i = 0; i < customers.Count; i += BATCH_SIZE)
             {
                 var batch = customers.Skip(i).Take(BATCH_SIZE).ToList();
-                await ProcessBatch(batch, job, result, existingCustomers, i, context);
+                await ProcessBatchWithDuplicateHandling(batch, job, result, existingCustomers, i, context, skipDuplicates);
 
                 // Update progress periodically
                 if (i % PROGRESS_UPDATE_INTERVAL == 0 || i + BATCH_SIZE >= customers.Count)
                 {
-                    job.UpdateProgress(
+                    job.UpdateProgressDetailed(
                         Math.Min(i + BATCH_SIZE, customers.Count),
                         result.SuccessfulRecords,
                         result.FailedRecords,
-                        result.SkippedRecords
+                        result.SkippedRecords,
+                        result.UpdatedRecords,
+                        result.NewRecords
                     );
 
-                    // Raise progress event
                     job.Raise(new ImportJobProgressDomainEvent(
-                        job.Id,
-                        job.UserId,
-                        job.ProcessedRecords,
-                        job.TotalRecords,
-                        job.GetProgressPercentage()
-                    ));
+                        job.Id, job.UserId, job.ProcessedRecords, job.TotalRecords, job.GetProgressPercentage()));
 
                     await context.SaveChangesAsync();
 
-                    logger.LogDebug("Import job {JobId} progress: {ProcessedRecords}/{TotalRecords} ({ProgressPercentage:F1}%)",
-                        jobId, job.ProcessedRecords, job.TotalRecords, job.GetProgressPercentage());
+                    logger.LogDebug("Import job {JobId} progress: {ProcessedRecords}/{TotalRecords} ({ProgressPercentage:F1}%) - New: {NewRecords}, Updated: {UpdatedRecords}, Skipped: {SkippedRecords}",
+                        jobId, job.ProcessedRecords, job.TotalRecords, job.GetProgressPercentage(), result.NewRecords, result.UpdatedRecords, result.SkippedRecords);
                 }
             }
 
@@ -216,25 +202,14 @@ public class CustomerImportService(
 
             // Raise domain event for completed import
             job.Raise(new ImportJobCompletedDomainEvent(
-                job.Id,
-                job.UserId,
-                ImportJobStatus.Completed,
-                result.TotalRecords,
-                result.SuccessfulRecords,
-                result.FailedRecords,
-                result.SkippedRecords,
-                null,
-                new ImportSummary(
-                    result.Summary.AverageRevenue,
-                    result.Summary.AverageTenureMonths,
-                    result.Summary.NewCustomers,
-                    result.Summary.HighRiskCustomers
-                )
-            ));
+                job.Id, job.UserId, ImportJobStatus.Completed,
+                result.TotalRecords, result.SuccessfulRecords, result.FailedRecords, result.SkippedRecords,
+                null, new ImportSummary(result.Summary.AverageRevenue, result.Summary.AverageTenureMonths,
+                    result.Summary.NewCustomers, result.Summary.HighRiskCustomers)));
 
             await context.SaveChangesAsync();
 
-            // Clean up file after successful import
+            // Cleanup
             try
             {
                 await fileStorageService.DeleteFileAsync(job.FilePath);
@@ -245,30 +220,22 @@ public class CustomerImportService(
                 logger.LogWarning(ex, "Failed to delete import file {FilePath} for job {JobId}", job.FilePath, jobId);
             }
 
-            logger.LogInformation("Import job {JobId} completed successfully. {SuccessfulRecords} records imported, {FailedRecords} failed, {SkippedRecords} skipped",
-                jobId, result.SuccessfulRecords, result.FailedRecords, result.SkippedRecords);
+            logger.LogInformation("Import job {JobId} completed successfully. " +
+                "{NewRecords} new records, {UpdatedRecords} updated, {FailedRecords} failed, {SkippedRecords} skipped",
+                jobId, result.NewRecords, result.UpdatedRecords, result.FailedRecords, result.SkippedRecords);
         }
         catch (Exception ex)
         {
             logger.LogError(ex, "Failed to process import file for job {JobId}", jobId);
 
             job.Fail($"Import failed: {ex.Message}");
-
-            // Raise domain event for failed import
             job.Raise(new ImportJobCompletedDomainEvent(
-                job.Id,
-                job.UserId,
-                ImportJobStatus.Failed,
-                job.TotalRecords,
-                job.SuccessfulRecords,
-                job.FailedRecords,
-                job.SkippedRecords,
-                ex.Message,
-                null
-            ));
+                job.Id, job.UserId, ImportJobStatus.Failed,
+                job.TotalRecords, job.SuccessfulRecords, job.FailedRecords, job.SkippedRecords,
+                ex.Message, null));
 
             await context.SaveChangesAsync();
-            throw; // Re-throw for Hangfire retry handling
+            throw;
         }
     }
 
@@ -295,7 +262,6 @@ public class CustomerImportService(
             job.Cancel();
             await context.SaveChangesAsync();
 
-            // Clean up file
             try
             {
                 await fileStorageService.DeleteFileAsync(job.FilePath);
@@ -339,10 +305,13 @@ public class CustomerImportService(
             job.Status = ImportJobStatus.Pending;
             job.ErrorMessage = null;
             job.ValidationErrors = null;
+            job.ImportUpdates = null;
             job.ProcessedRecords = 0;
             job.SuccessfulRecords = 0;
             job.FailedRecords = 0;
             job.SkippedRecords = 0;
+            job.UpdatedRecords = 0;
+            job.NewRecords = 0;
             job.StartedAt = null;
             job.CompletedAt = null;
 
@@ -377,7 +346,6 @@ public class CustomerImportService(
             {
                 try
                 {
-                    // Delete associated file
                     if (await fileStorageService.FileExistsAsync(job.FilePath))
                     {
                         await fileStorageService.DeleteFileAsync(job.FilePath);
@@ -389,7 +357,6 @@ public class CustomerImportService(
                 }
             }
 
-            // Remove jobs from database
             context.ImportJobs.RemoveRange(oldJobs);
             await context.SaveChangesAsync();
 
@@ -402,74 +369,104 @@ public class CustomerImportService(
         }
     }
 
-    // Private helper methods
-    private async Task<List<ImportError>> CheckForDuplicatesAsync(List<Customer> customers, Guid companyId, IApplicationDbContext context)
+    // Helper methods
+    private static bool IsCriticalError(ImportError error)
     {
-        var errors = new List<ImportError>();
-        var emails = customers.Select(c => c.Email.ToLower()).ToList();
+        var criticalMessages = new[]
+        {
+            "Email is required",
+            "Invalid email format",
+            "Either first name or last name is required"
+        };
 
+        return criticalMessages.Any(msg => error.ErrorMessage.Contains(msg, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private async Task<DuplicateAnalysisResult> AnalyzeDuplicatesAsync(
+        List<Customer> customers,
+        Guid companyId,
+        IApplicationDbContext context,
+        bool skipDuplicates)
+    {
+        var emails = customers.Select(c => c.Email.ToLower()).ToList();
         var existingEmails = await context.Customers
             .Where(c => c.CompanyId == companyId && emails.Contains(c.Email.ToLower()))
             .Select(c => c.Email.ToLower())
             .ToHashSetAsync();
 
-        for (int i = 0; i < customers.Count; i++)
+        return new DuplicateAnalysisResult
         {
-            var customer = customers[i];
-            if (existingEmails.Contains(customer.Email.ToLower()))
-            {
-                errors.Add(new ImportError
-                {
-                    RowNumber = i + 2,
-                    Email = customer.Email,
-                    ErrorMessage = "Customer with this email already exists",
-                    FieldName = "Email"
-                });
-            }
-        }
-
-        return errors;
+            ExistingEmails = existingEmails,
+            SkippedEmails = skipDuplicates ? existingEmails : new HashSet<string>()
+        };
     }
 
-    private async Task ProcessBatch(
+    private async Task ProcessBatchWithDuplicateHandling(
         List<Customer> batch,
         ImportJob job,
         ImportJobResult result,
         Dictionary<string, Customer> existingCustomers,
         int batchStartIndex,
-        IApplicationDbContext context)
+        IApplicationDbContext context,
+        bool skipDuplicates)
     {
         foreach (var (customer, index) in batch.Select((c, i) => (c, i)))
         {
             try
             {
                 var emailKey = customer.Email.ToLower();
+                var rowNumber = batchStartIndex + index + 2; // +2 for header and 1-based indexing
 
                 if (existingCustomers.TryGetValue(emailKey, out var existingCustomer))
                 {
-                    UpdateCustomerFields(existingCustomer, customer);
-                    result.SuccessfulRecords++;
-                    logger.LogDebug("Updated existing customer {Email} in job {JobId}", customer.Email, job.Id);
+                    if (skipDuplicates)
+                    {
+                        // Skip this customer entirely
+                        result.SkippedRecords++;
+                        logger.LogDebug("Skipped existing customer {Email} at row {RowNumber} in job {JobId}",
+                            customer.Email, rowNumber, job.Id);
+                    }
+                    else
+                    {
+                        // Update existing customer and track changes
+                        var updates = UpdateCustomerFieldsWithTracking(existingCustomer, customer);
+
+                        if (updates.UpdatedFields.Any())
+                        {
+                            updates.RowNumber = rowNumber;
+                            updates.Email = customer.Email;
+                            updates.CustomerName = $"{customer.FirstName} {customer.LastName}".Trim();
+                            result.Updates.Add(updates);
+                            result.UpdatedRecords++;
+
+                            logger.LogDebug("Updated existing customer {Email} with {FieldCount} changes in job {JobId}",
+                                customer.Email, updates.UpdatedFields.Count, job.Id);
+                        }
+                        else
+                        {
+                            logger.LogDebug("No changes detected for existing customer {Email} in job {JobId}",
+                                customer.Email, job.Id);
+                        }
+
+                        result.SuccessfulRecords++;
+                    }
                 }
                 else
                 {
+                    // New customer
                     customer.CompanyId = job.CompanyId;
                     customer.LastSyncedAt = DateTime.UtcNow;
                     customer.ExternalId = customer.ExternalId ?? customer.Email;
                     customer.Source = job.ImportSource ?? "import";
 
-                    if (customer.ChurnRiskLevel == default)
-                        customer.ChurnRiskLevel = ChurnRiskLevel.Low;
-
-                    if (customer.PaymentStatus == default)
-                        customer.PaymentStatus = PaymentStatus.Active;
-
-                    if (customer.SubscriptionStatus == default)
-                        customer.SubscriptionStatus = SubscriptionStatus.Active;
+                    SetCustomerDefaults(customer);
 
                     context.Customers.Add(customer);
+                    result.NewRecords++;
                     result.SuccessfulRecords++;
-                    logger.LogDebug("Added new customer {Email} in job {JobId}", customer.Email, job.Id);
+
+                    logger.LogDebug("Added new customer {Email} at row {RowNumber} in job {JobId}",
+                        customer.Email, rowNumber, job.Id);
                 }
 
                 result.ProcessedRecords++;
@@ -494,6 +491,105 @@ public class CustomerImportService(
         }
 
         await context.SaveChangesAsync();
+    }
+
+    private static ImportUpdate UpdateCustomerFieldsWithTracking(Customer existing, Customer updated)
+    {
+        var importUpdate = new ImportUpdate();
+        var updatedFields = new List<FieldUpdate>();
+
+        // Track all potential field updates
+        CheckAndTrackFieldUpdate(updatedFields, "FirstName", existing.FirstName, updated.FirstName);
+        CheckAndTrackFieldUpdate(updatedFields, "LastName", existing.LastName, updated.LastName);
+        CheckAndTrackFieldUpdate(updatedFields, "Phone", existing.Phone, updated.Phone);
+        CheckAndTrackFieldUpdate(updatedFields, "CompanyName", existing.CompanyName, updated.CompanyName);
+        CheckAndTrackFieldUpdate(updatedFields, "JobTitle", existing.JobTitle, updated.JobTitle);
+        CheckAndTrackFieldUpdate(updatedFields, "Plan", existing.Plan.ToString(), updated.Plan.ToString());
+        CheckAndTrackFieldUpdate(updatedFields, "SubscriptionStatus", existing.SubscriptionStatus.ToString(), updated.SubscriptionStatus.ToString());
+        CheckAndTrackFieldUpdate(updatedFields, "MonthlyRecurringRevenue", existing.MonthlyRecurringRevenue.ToString("F2"), updated.MonthlyRecurringRevenue.ToString("F2"));
+        CheckAndTrackFieldUpdate(updatedFields, "LifetimeValue", existing.LifetimeValue.ToString("F2"), updated.LifetimeValue.ToString("F2"));
+        CheckAndTrackFieldUpdate(updatedFields, "SubscriptionStartDate", existing.SubscriptionStartDate?.ToString("yyyy-MM-dd"), updated.SubscriptionStartDate?.ToString("yyyy-MM-dd"));
+        CheckAndTrackFieldUpdate(updatedFields, "SubscriptionEndDate", existing.SubscriptionEndDate?.ToString("yyyy-MM-dd"), updated.SubscriptionEndDate?.ToString("yyyy-MM-dd"));
+        CheckAndTrackFieldUpdate(updatedFields, "LastLoginDate", existing.LastLoginDate?.ToString("yyyy-MM-dd"), updated.LastLoginDate?.ToString("yyyy-MM-dd"));
+        CheckAndTrackFieldUpdate(updatedFields, "WeeklyLoginFrequency", existing.WeeklyLoginFrequency.ToString(), updated.WeeklyLoginFrequency.ToString());
+        CheckAndTrackFieldUpdate(updatedFields, "FeatureUsagePercentage", existing.FeatureUsagePercentage.ToString("F2"), updated.FeatureUsagePercentage.ToString("F2"));
+        CheckAndTrackFieldUpdate(updatedFields, "SupportTicketCount", existing.SupportTicketCount.ToString(), updated.SupportTicketCount.ToString());
+        CheckAndTrackFieldUpdate(updatedFields, "Age", existing.Age?.ToString(), updated.Age?.ToString());
+        CheckAndTrackFieldUpdate(updatedFields, "Gender", existing.Gender, updated.Gender);
+        CheckAndTrackFieldUpdate(updatedFields, "Location", existing.Location, updated.Location);
+        CheckAndTrackFieldUpdate(updatedFields, "Country", existing.Country, updated.Country);
+        CheckAndTrackFieldUpdate(updatedFields, "TimeZone", existing.TimeZone, updated.TimeZone);
+        CheckAndTrackFieldUpdate(updatedFields, "PaymentStatus", existing.PaymentStatus.ToString(), updated.PaymentStatus.ToString());
+        CheckAndTrackFieldUpdate(updatedFields, "LastPaymentDate", existing.LastPaymentDate?.ToString("yyyy-MM-dd"), updated.LastPaymentDate?.ToString("yyyy-MM-dd"));
+        CheckAndTrackFieldUpdate(updatedFields, "NextBillingDate", existing.NextBillingDate?.ToString("yyyy-MM-dd"), updated.NextBillingDate?.ToString("yyyy-MM-dd"));
+
+        // Only update fields that actually changed
+        foreach (var fieldUpdate in updatedFields)
+        {
+            switch (fieldUpdate.FieldName)
+            {
+                case "FirstName": existing.FirstName = updated.FirstName; break;
+                case "LastName": existing.LastName = updated.LastName; break;
+                case "Phone": existing.Phone = updated.Phone; break;
+                case "CompanyName": existing.CompanyName = updated.CompanyName; break;
+                case "JobTitle": existing.JobTitle = updated.JobTitle; break;
+                case "Plan": existing.Plan = updated.Plan; break;
+                case "SubscriptionStatus": existing.SubscriptionStatus = updated.SubscriptionStatus; break;
+                case "MonthlyRecurringRevenue": existing.MonthlyRecurringRevenue = updated.MonthlyRecurringRevenue; break;
+                case "LifetimeValue": existing.LifetimeValue = updated.LifetimeValue; break;
+                case "SubscriptionStartDate": existing.SubscriptionStartDate = updated.SubscriptionStartDate; break;
+                case "SubscriptionEndDate": existing.SubscriptionEndDate = updated.SubscriptionEndDate; break;
+                case "LastLoginDate": existing.LastLoginDate = updated.LastLoginDate; break;
+                case "WeeklyLoginFrequency": existing.WeeklyLoginFrequency = updated.WeeklyLoginFrequency; break;
+                case "FeatureUsagePercentage": existing.FeatureUsagePercentage = updated.FeatureUsagePercentage; break;
+                case "SupportTicketCount": existing.SupportTicketCount = updated.SupportTicketCount; break;
+                case "Age": existing.Age = updated.Age; break;
+                case "Gender": existing.Gender = updated.Gender; break;
+                case "Location": existing.Location = updated.Location; break;
+                case "Country": existing.Country = updated.Country; break;
+                case "TimeZone": existing.TimeZone = updated.TimeZone; break;
+                case "PaymentStatus": existing.PaymentStatus = updated.PaymentStatus; break;
+                case "LastPaymentDate": existing.LastPaymentDate = updated.LastPaymentDate; break;
+                case "NextBillingDate": existing.NextBillingDate = updated.NextBillingDate; break;
+            }
+        }
+
+        // Always update sync metadata if any changes were made
+        if (updatedFields.Any())
+        {
+            existing.LastSyncedAt = DateTime.UtcNow;
+        }
+
+        importUpdate.UpdatedFields = updatedFields;
+        return importUpdate;
+    }
+
+    private static void CheckAndTrackFieldUpdate(List<FieldUpdate> updates, string fieldName, string? oldValue, string? newValue)
+    {
+        var oldVal = oldValue ?? "";
+        var newVal = newValue ?? "";
+
+        if (!oldVal.Equals(newVal, StringComparison.OrdinalIgnoreCase))
+        {
+            updates.Add(new FieldUpdate
+            {
+                FieldName = fieldName,
+                OldValue = oldVal,
+                NewValue = newVal
+            });
+        }
+    }
+
+    private static void SetCustomerDefaults(Customer customer)
+    {
+        if (customer.ChurnRiskLevel == default)
+            customer.ChurnRiskLevel = ChurnRiskLevel.Low;
+
+        if (customer.PaymentStatus == default)
+            customer.PaymentStatus = PaymentStatus.Active;
+
+        if (customer.SubscriptionStatus == default)
+            customer.SubscriptionStatus = SubscriptionStatus.Active;
     }
 
     private static (List<Customer> customers, int totalRecords, List<ImportError> errors) ParseCsvFile(
@@ -564,10 +660,6 @@ public class CustomerImportService(
 
         return (customers, lines.Length - 1, errors); // -1 to exclude header
     }
-
-    // Add all the remaining helper methods from your original service...
-    // (ParseCsvLine, CreateCustomerFromCsvRow, MapFieldToCustomer, ValidateCustomer, etc.)
-    // These remain the same as in your original implementation
 
     private static string[] ParseCsvLine(string line)
     {
@@ -641,9 +733,6 @@ public class CustomerImportService(
 
         return customer;
     }
-
-    // Add the rest of the helper methods (MapFieldToCustomer, ValidateCustomer, etc.)
-    // These are exactly the same as in your original implementation
 
     private static void MapFieldToCustomer(Customer customer, string header, string value)
     {
@@ -823,34 +912,6 @@ public class CustomerImportService(
         }
     }
 
-    private static void UpdateCustomerFields(Customer existing, Customer updated)
-    {
-        existing.FirstName = updated.FirstName;
-        existing.LastName = updated.LastName;
-        existing.Phone = updated.Phone;
-        existing.CompanyName = updated.CompanyName;
-        existing.JobTitle = updated.JobTitle;
-        existing.Plan = updated.Plan;
-        existing.SubscriptionStatus = updated.SubscriptionStatus;
-        existing.MonthlyRecurringRevenue = updated.MonthlyRecurringRevenue;
-        existing.LifetimeValue = updated.LifetimeValue;
-        existing.SubscriptionStartDate = updated.SubscriptionStartDate;
-        existing.SubscriptionEndDate = updated.SubscriptionEndDate;
-        existing.LastLoginDate = updated.LastLoginDate;
-        existing.WeeklyLoginFrequency = updated.WeeklyLoginFrequency;
-        existing.FeatureUsagePercentage = updated.FeatureUsagePercentage;
-        existing.SupportTicketCount = updated.SupportTicketCount;
-        existing.Age = updated.Age;
-        existing.Gender = updated.Gender;
-        existing.Location = updated.Location;
-        existing.Country = updated.Country;
-        existing.TimeZone = updated.TimeZone;
-        existing.PaymentStatus = updated.PaymentStatus;
-        existing.LastPaymentDate = updated.LastPaymentDate;
-        existing.NextBillingDate = updated.NextBillingDate;
-        existing.LastSyncedAt = DateTime.UtcNow;
-    }
-
     private static ImportSummary CalculateInsights(List<Customer> customers)
     {
         if (customers.Count == 0)
@@ -887,5 +948,12 @@ public class CustomerImportService(
         };
 
         return summary;
+    }
+
+    // Helper class
+    private class DuplicateAnalysisResult
+    {
+        public HashSet<string> ExistingEmails { get; set; } = new();
+        public HashSet<string> SkippedEmails { get; set; } = new();
     }
 }

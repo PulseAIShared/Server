@@ -1,10 +1,7 @@
-﻿using SharedKernel.Enums;
+﻿// Domain/Imports/ImportJob.cs - Complete updated version
+using SharedKernel.Enums;
 using SharedKernel;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
+using Domain.Imports;
 
 namespace Domain.Imports
 {
@@ -25,9 +22,16 @@ namespace Domain.Imports
         public int FailedRecords { get; set; }
         public int SkippedRecords { get; set; }
 
+        // NEW: Enhanced tracking
+        public int UpdatedRecords { get; set; }
+        public int NewRecords { get; set; }
+
         // Error tracking
         public string? ErrorMessage { get; set; }
         public string? ValidationErrors { get; set; } // JSON array of validation errors
+
+        // NEW: Update tracking
+        public string? ImportUpdates { get; set; } // JSON array of field updates
 
         // Timestamps
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
@@ -57,7 +61,10 @@ namespace Domain.Imports
             SuccessfulRecords = result.SuccessfulRecords;
             FailedRecords = result.FailedRecords;
             SkippedRecords = result.SkippedRecords;
+            UpdatedRecords = result.UpdatedRecords; // NEW
+            NewRecords = result.NewRecords; // NEW
             ImportSummary = System.Text.Json.JsonSerializer.Serialize(result.Summary);
+            SetImportUpdates(result.Updates); // NEW
         }
 
         public void Fail(string errorMessage)
@@ -81,6 +88,17 @@ namespace Domain.Imports
             SkippedRecords = skipped;
         }
 
+        // Enhanced progress tracking
+        public void UpdateProgressDetailed(int processed, int successful, int failed, int skipped, int updated, int newRecords)
+        {
+            ProcessedRecords = processed;
+            SuccessfulRecords = successful;
+            FailedRecords = failed;
+            SkippedRecords = skipped;
+            UpdatedRecords = updated;
+            NewRecords = newRecords;
+        }
+
         public void SetValidationErrors(List<ImportError> errors)
         {
             ValidationErrors = System.Text.Json.JsonSerializer.Serialize(errors);
@@ -98,6 +116,27 @@ namespace Domain.Imports
             catch
             {
                 return new List<ImportError>();
+            }
+        }
+
+        // NEW: Update tracking methods
+        public void SetImportUpdates(List<ImportUpdate> updates)
+        {
+            ImportUpdates = System.Text.Json.JsonSerializer.Serialize(updates);
+        }
+
+        public List<ImportUpdate> GetImportUpdates()
+        {
+            if (string.IsNullOrEmpty(ImportUpdates))
+                return new List<ImportUpdate>();
+
+            try
+            {
+                return System.Text.Json.JsonSerializer.Deserialize<List<ImportUpdate>>(ImportUpdates) ?? new List<ImportUpdate>();
+            }
+            catch
+            {
+                return new List<ImportUpdate>();
             }
         }
 
@@ -127,5 +166,12 @@ namespace Domain.Imports
         public bool CanBeCancelled => Status == ImportJobStatus.Pending || Status == ImportJobStatus.Validating;
 
         public bool HasErrors => FailedRecords > 0 || !string.IsNullOrEmpty(ErrorMessage);
+
+        // NEW: Helper method to determine if duplicates should be skipped
+        public bool ShouldSkipDuplicates()
+        {
+            return ImportSource?.Contains("skipDuplicates=true") == true;
+        }
     }
 }
+

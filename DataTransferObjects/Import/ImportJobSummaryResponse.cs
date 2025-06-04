@@ -16,6 +16,9 @@ namespace DataTransferObjects.Import
         public int TotalRecords { get; set; }
         public int SuccessfulRecords { get; set; }
         public int FailedRecords { get; set; }
+        public int SkippedRecords { get; set; }
+        public int UpdatedRecords { get; set; } // New property
+        public int NewRecords { get; set; } // New property
         public DateTime CreatedAt { get; set; }
         public DateTime? CompletedAt { get; set; }
         public string? ErrorMessage { get; set; }

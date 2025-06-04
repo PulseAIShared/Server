@@ -66,12 +66,23 @@ namespace Infrastructure.Database.Configurations
             builder.Property(ij => ij.SkippedRecords)
                 .HasDefaultValue(0);
 
+            // NEW: Additional tracking fields
+            builder.Property(ij => ij.UpdatedRecords)
+                .HasDefaultValue(0);
+
+            builder.Property(ij => ij.NewRecords)
+                .HasDefaultValue(0);
+
             // Error handling
             builder.Property(ij => ij.ErrorMessage)
                 .HasMaxLength(2000);
 
             builder.Property(ij => ij.ValidationErrors)
                 .HasColumnType("text"); // JSON string for validation errors
+
+            // NEW: Updates tracking
+            builder.Property(ij => ij.ImportUpdates)
+                .HasColumnType("text"); // JSON string for field updates
 
             // Timestamps
             builder.Property(ij => ij.CreatedAt)
@@ -110,14 +121,14 @@ namespace Infrastructure.Database.Configurations
             builder.HasIndex(ij => new { ij.Status, ij.CreatedAt })
                 .HasDatabaseName("ix_import_jobs_status_created");
 
-    
+            // Relationships
             builder.HasOne(ij => ij.User)
-               .WithMany() 
+               .WithMany()
                .HasForeignKey(ij => ij.UserId)
                .OnDelete(DeleteBehavior.Cascade);
 
             builder.HasOne(ij => ij.Company)
-                .WithMany(c => c.ImportJobs) 
+                .WithMany(c => c.ImportJobs)
                 .HasForeignKey(ij => ij.CompanyId)
                 .OnDelete(DeleteBehavior.Cascade);
 

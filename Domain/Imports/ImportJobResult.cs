@@ -13,7 +13,10 @@ namespace Domain.Imports
         public int SuccessfulRecords { get; set; }
         public int FailedRecords { get; set; }
         public int SkippedRecords { get; set; }
+        public int UpdatedRecords { get; set; } // New property
+        public int NewRecords { get; set; } // New property
         public ImportSummary Summary { get; set; } = new();
         public List<ImportError> Errors { get; set; } = new();
+        public List<ImportUpdate> Updates { get; set; } = new(); // New property
     }
 }

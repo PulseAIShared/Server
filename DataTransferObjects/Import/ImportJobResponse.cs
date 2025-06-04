@@ -19,12 +19,15 @@ namespace DataTransferObjects.Import
         public int SuccessfulRecords { get; set; }
         public int FailedRecords { get; set; }
         public int SkippedRecords { get; set; }
+        public int UpdatedRecords { get; set; } // New property
+        public int NewRecords { get; set; } // New property
         public string? ErrorMessage { get; set; }
         public DateTime CreatedAt { get; set; }
         public DateTime? StartedAt { get; set; }
         public DateTime? CompletedAt { get; set; }
         public double ProgressPercentage { get; set; }
         public List<ImportErrorResponse> ValidationErrors { get; set; } = new();
+        public List<ImportUpdateResponse> Updates { get; set; } = new(); // New property
         public ImportSummaryResponse? Summary { get; set; }
     }
 }

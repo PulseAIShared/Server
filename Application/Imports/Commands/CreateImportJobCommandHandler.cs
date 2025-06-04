@@ -20,12 +20,12 @@ namespace Application.Imports.Commands
 {
 
     internal sealed class CreateImportJobCommandHandler(
-        IApplicationDbContext context,
-        IUserContext userContext,
-        IFileStorageService fileStorageService,
-        IBackgroundJobClient backgroundJobClient,
-        ILogger<CreateImportJobCommandHandler> logger)
-        : ICommandHandler<CreateImportJobCommand, Guid>
+           IApplicationDbContext context,
+           IUserContext userContext,
+           IFileStorageService fileStorageService,
+           IBackgroundJobClient backgroundJobClient,
+           ILogger<CreateImportJobCommandHandler> logger)
+           : ICommandHandler<CreateImportJobCommand, Guid>
     {
         public async Task<Result<Guid>> Handle(CreateImportJobCommand command, CancellationToken cancellationToken)
         {
@@ -56,7 +56,7 @@ namespace Application.Imports.Commands
                     "imports",
                     fileName);
 
-                // Create import job
+                // Create import job with skipDuplicates metadata
                 var importJob = new ImportJob
                 {
                     UserId = command.UserId,
@@ -68,16 +68,23 @@ namespace Application.Imports.Commands
                     Status = ImportJobStatus.Pending
                 };
 
+                // Store the skipDuplicates setting in ImportSource for now
+                // In a real implementation, you might add a separate property to ImportJob
+                if (command.SkipDuplicates)
+                {
+                    importJob.ImportSource = $"{command.ImportSource}|skipDuplicates=true";
+                }
+
                 context.ImportJobs.Add(importJob);
                 await context.SaveChangesAsync(cancellationToken);
 
                 // Queue validation job with Hangfire
                 var jobId = backgroundJobClient.Enqueue<IImportBackgroundService>(
-                    "imports", // Use specific queue for imports
+                    "imports",
                     service => service.ValidateImportAsync(importJob.Id, command.SkipDuplicates));
 
-                logger.LogInformation("Created import job {ImportJobId} for user {UserId}, queued validation job {HangfireJobId}",
-                    importJob.Id, command.UserId, jobId);
+                logger.LogInformation("Created import job {ImportJobId} for user {UserId} (skipDuplicates: {SkipDuplicates}), queued validation job {HangfireJobId}",
+                    importJob.Id, command.UserId, command.SkipDuplicates, jobId);
 
                 return importJob.Id;
             }
