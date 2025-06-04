@@ -158,11 +158,9 @@ jobs:
       # Step 6: Build and push API image (FORCE FRESH BUILD)
       - name: Build and push API image
         run: |
-          # Build with no cache and unique tag
-          docker compose build --no-cache api
-          docker tag smains/pulseai:latest smains/pulseai:$(date +%s)
+          # Build with no cache to ensure fresh build
+          docker compose build --no-cache --pull api
           docker compose push api
-          docker push smains/pulseai:$(date +%s)
       
       # Step 7: Create environment file
       - name: Create environment file
