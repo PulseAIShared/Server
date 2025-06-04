@@ -39,8 +39,8 @@ namespace Application.Imports.Queries
                     SuccessfulRecords = ij.SuccessfulRecords,
                     FailedRecords = ij.FailedRecords,
                     SkippedRecords = ij.SkippedRecords,
-                    UpdatedRecords = ij.UpdatedRecords, // New
-                    NewRecords = ij.NewRecords, // New
+                    UpdatedRecords = ij.UpdatedRecords, 
+                    NewRecords = ij.NewRecords, 
                     CreatedAt = ij.CreatedAt,
                     CompletedAt = ij.CompletedAt,
                     ErrorMessage = ij.ErrorMessage
