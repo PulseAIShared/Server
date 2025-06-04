@@ -27,7 +27,7 @@ namespace DataTransferObjects.Import
         public DateTime? CompletedAt { get; set; }
         public double ProgressPercentage { get; set; }
         public List<ImportErrorResponse> ValidationErrors { get; set; } = new();
-        public List<ImportUpdateResponse> Updates { get; set; } = new(); // New property
+        public List<ImportUpdateResponse> Updates { get; set; } = new(); 
         public ImportSummaryResponse? Summary { get; set; }
     }
 }
