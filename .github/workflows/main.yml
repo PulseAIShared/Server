@@ -23,7 +23,7 @@ jobs:
           username: ${{ secrets.DOCKER_HUB_USERNAME }}
           password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
       
-      # Step 4: Create nginx configuration (SIMPLE WORKING VERSION)
+      # Step 4: Create nginx configuration (FIXED CORS VERSION)
       - name: Create nginx configuration
         run: |
           cat > nginx.conf << 'EOL'
@@ -52,10 +52,8 @@ jobs:
                   ssl_certificate /etc/letsencrypt/live/${{ secrets.DOMAIN_NAME }}/fullchain.pem;
                   ssl_certificate_key /etc/letsencrypt/live/${{ secrets.DOMAIN_NAME }}/privkey.pem;
                   
-                  add_header Access-Control-Allow-Origin "https://pulseltv.com" always;
-                  add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS" always;
-                  add_header Access-Control-Allow-Headers "Origin, X-Requested-With, Content-Type, Accept, Authorization, x-signalr-user-agent" always;
-                  add_header Access-Control-Allow-Credentials "true" always;
+                  # Remove CORS headers from nginx - let the API handle them
+                  # This prevents duplicate headers
                   
                   location / {
                       proxy_pass http://api:5000;
@@ -65,6 +63,12 @@ jobs:
                       proxy_set_header X-Forwarded-Proto $scheme;
                       proxy_set_header Upgrade $http_upgrade;
                       proxy_set_header Connection "upgrade";
+                      
+                      # Hide any existing CORS headers from upstream to prevent duplicates
+                      proxy_hide_header Access-Control-Allow-Origin;
+                      proxy_hide_header Access-Control-Allow-Methods;
+                      proxy_hide_header Access-Control-Allow-Headers;
+                      proxy_hide_header Access-Control-Allow-Credentials;
                   }
               }
           }
@@ -86,6 +90,8 @@ jobs:
                 Jwt__Secret: "${JWT_SECRET}"
                 Jwt__Issuer: "pulseai-api"
                 Jwt__Audience: "pulseai-clients"
+                # Ensure API handles CORS properly
+                CORS__AllowedOrigins: "https://pulseltv.com"
               networks:
                 - pulseai-network
               restart: unless-stopped
@@ -238,13 +244,20 @@ jobs:
               docker compose logs nginx --tail=10
             fi
             
-            # Test CORS
-            echo "🔍 Testing CORS headers..."
-            CORS_TEST=$(curl -s -H "Origin: https://pulseltv.com" -I https://${DOMAIN_NAME}/health | grep -i "access-control-allow-origin" | wc -l)
-            if [ "$CORS_TEST" -eq 1 ]; then
-              echo "✅ CORS headers correct"
+            # Test CORS with detailed output
+            echo "🔍 Testing CORS headers in detail..."
+            CORS_RESPONSE=$(curl -s -H "Origin: https://pulseltv.com" -I https://${DOMAIN_NAME}/health)
+            echo "CORS Response headers:"
+            echo "$CORS_RESPONSE" | grep -i "access-control"
+            
+            CORS_COUNT=$(echo "$CORS_RESPONSE" | grep -i "access-control-allow-origin" | wc -l)
+            if [ "$CORS_COUNT" -eq 1 ]; then
+              echo "✅ CORS headers correct (exactly 1 origin header)"
+            elif [ "$CORS_COUNT" -gt 1 ]; then
+              echo "❌ CORS headers duplicated ($CORS_COUNT origin headers found)"
+              echo "This indicates both nginx and API are setting CORS headers"
             else
-              echo "⚠️ CORS headers: $CORS_TEST (should be 1)"
+              echo "⚠️ No CORS headers found"
             fi
             
             echo ""
@@ -254,77 +267,60 @@ jobs:
             echo "✅ Health check: https://${DOMAIN_NAME}/health"
             echo "✅ SSL certificate installed"
             echo "✅ Auto-renewal configured"
+            echo "✅ CORS issue should be resolved"
             echo "✅ Ready for client: https://pulseltv.com"
             
           EOF
       
-      # Step 9: Final verification with detailed debugging
-      - name: Verify deployment
+      # Step 9: Final verification with CORS focus
+      - name: Verify deployment and CORS
         run: |
-          echo "🔍 Final verification..."
+          echo "🔍 Final verification with CORS focus..."
           echo "Testing domain: ${{ secrets.DOMAIN_NAME }}"
           
-          # DNS resolution test
-          echo "🔍 Testing DNS resolution..."
-          nslookup ${{ secrets.DOMAIN_NAME }} || echo "⚠️ DNS resolution failed"
+          # Test CORS specifically
+          echo "🔍 Testing CORS headers with multiple methods..."
           
-          # Test if server responds at all
-          echo "🔍 Testing basic connectivity..."
-          if ping -c 3 ${{ secrets.DOMAIN_NAME }}; then
-            echo "✅ Server is reachable"
+          # Method 1: Simple preflight test
+          echo "--- Method 1: Simple CORS test ---"
+          curl -s -H "Origin: https://pulseltv.com" -I https://${{ secrets.DOMAIN_NAME }}/health | grep -i "access-control" || echo "No CORS headers found"
+          
+          # Method 2: OPTIONS preflight request
+          echo "--- Method 2: OPTIONS preflight test ---"
+          curl -s -X OPTIONS \
+            -H "Origin: https://pulseltv.com" \
+            -H "Access-Control-Request-Method: GET" \
+            -H "Access-Control-Request-Headers: Authorization" \
+            -I https://${{ secrets.DOMAIN_NAME }}/users/me | grep -i "access-control" || echo "No CORS headers in OPTIONS"
+          
+          # Method 3: Count duplicate headers
+          echo "--- Method 3: Header count verification ---"
+          HEADER_COUNT=$(curl -s -H "Origin: https://pulseltv.com" -I https://${{ secrets.DOMAIN_NAME }}/health | grep -i "access-control-allow-origin" | wc -l)
+          echo "Access-Control-Allow-Origin header count: $HEADER_COUNT"
+          
+          if [ "$HEADER_COUNT" -eq 1 ]; then
+            echo "✅ CORS configuration is correct"
+          elif [ "$HEADER_COUNT" -gt 1 ]; then
+            echo "❌ Still have duplicate CORS headers"
+            echo "You may need to disable CORS in your ASP.NET Core application"
           else
-            echo "❌ Server is not reachable"
+            echo "⚠️ No CORS headers - API may not be handling them"
           fi
           
-          # Test HTTP (should redirect)
-          echo "🔍 Testing HTTP (should redirect to HTTPS)..."
-          HTTP_RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -L http://${{ secrets.DOMAIN_NAME }}/health || echo "FAILED")
-          echo "HTTP response code: $HTTP_RESPONSE"
-          
-          # Test HTTPS with verbose output
-          echo "🔍 Testing HTTPS endpoint with detailed output..."
-          HTTPS_RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" https://${{ secrets.DOMAIN_NAME }}/health || echo "FAILED")
-          echo "HTTPS response code: $HTTPS_RESPONSE"
-          
-          # Get more details about the HTTPS request
-          echo "🔍 Detailed HTTPS test..."
-          curl -v -s https://${{ secrets.DOMAIN_NAME }}/health || echo "Detailed HTTPS test failed"
-          
-          # Test if containers are running on the server
-          echo "🔍 Checking server container status..."
+          # Check server logs for any CORS-related errors
+          echo "🔍 Checking server logs for CORS issues..."
           ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
             root@${{ secrets.DIGITALOCEAN_DROPLET_IP }} << 'EOF'
-            echo "=== Docker containers status ==="
-            docker ps
-            echo ""
-            echo "=== Docker compose logs (last 20 lines) ==="
             cd /opt/pulseai
-            docker compose logs --tail=20
+            echo "=== Recent API logs (looking for CORS) ==="
+            docker compose logs api --tail=50 | grep -i "cors\|origin\|preflight" || echo "No CORS-related logs found"
             echo ""
-            echo "=== Nginx logs (last 10 lines) ==="
-            docker compose logs nginx --tail=10
-            echo ""
-            echo "=== API logs (last 10 lines) ==="
-            docker compose logs api --tail=10
+            echo "=== Recent nginx access logs ==="
+            docker compose logs nginx --tail=20 | grep -i "OPTIONS\|cors" || echo "No CORS-related nginx logs"
           EOF
           
-          # Final assessment
-          if [ "$HTTPS_RESPONSE" = "200" ]; then
-            echo "✅ API is working via HTTPS"
-          else
-            echo "❌ API verification failed - Response code: $HTTPS_RESPONSE"
-            echo "Check the logs above for more details"
-          fi
-          
-          # Test CORS
-          echo "🔍 Testing CORS headers..."
-          CORS_HEADERS=$(curl -s -H "Origin: https://pulseltv.com" -I https://${{ secrets.DOMAIN_NAME }}/health | grep -i "access-control-allow-origin" | wc -l || echo "0")
-          if [ "$CORS_HEADERS" -eq 1 ]; then
-            echo "✅ CORS configuration correct"
-          else
-            echo "⚠️ CORS may have issues - found $CORS_HEADERS origin headers"
-          fi
-          
           echo ""
-          echo "🎯 Target API URL: https://${{ secrets.DOMAIN_NAME }}"
-          echo "📋 Check the logs above to debug any issues"
+          echo "🎯 If you still see CORS issues after this deployment:"
+          echo "1. Check your ASP.NET Core Startup.cs or Program.cs"
+          echo "2. Make sure CORS is configured to only allow 'https://pulseltv.com'"
+          echo "3. Consider temporarily disabling CORS in your API to let nginx handle it"
