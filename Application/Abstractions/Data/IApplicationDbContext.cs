@@ -7,6 +7,7 @@ using Domain.Segments;
 using Domain.Todos;
 using Domain.Users;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 
 namespace Application.Abstractions.Data;
 
@@ -28,5 +29,6 @@ public interface IApplicationDbContext
     DbSet<Company> Companies { get; }
     DbSet<CompanyInvitation> CompanyInvitations { get; }
     DbSet<Integration> Integrations { get; }
+    DatabaseFacade Database { get; }
     Task<int> SaveChangesAsync(CancellationToken cancellationToken = default);
 }

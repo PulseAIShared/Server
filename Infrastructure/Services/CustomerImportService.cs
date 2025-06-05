@@ -35,98 +35,7 @@ public class CustomerImportService : ICustomerImportService
         _logger = logger;
     }
 
-    public async Task ValidateImportFileAsync(Guid jobId, bool skipDuplicates)
-    {
-        using var scope = _serviceProvider.CreateScope();
-        var context = scope.ServiceProvider.GetRequiredService<IApplicationDbContext>();
-
-        var job = await context.ImportJobs.FindAsync(jobId);
-        if (job == null)
-        {
-            _logger.LogWarning("Import job {JobId} not found for validation", jobId);
-            return;
-        }
-
-        try
-        {
-            _logger.LogInformation("Starting validation for import job {JobId} (skipDuplicates: {SkipDuplicates})",
-                jobId, skipDuplicates);
-
-            job.Status = ImportJobStatus.Validating;
-            await context.SaveChangesAsync();
-
-            // Read and parse CSV file
-            var fileContent = await _fileStorageService.ReadFileAsync(job.FilePath);
-            _logger.LogInformation("Read file content, length: {Length} characters", fileContent.Length);
-
-            var (customers, totalRecords, parseErrors) = ParseCsvFile(fileContent, job.ImportSource!);
-            _logger.LogInformation("Parsed {CustomerCount} customers from {TotalRecords} records", customers.Count, totalRecords);
-
-            job.TotalRecords = totalRecords;
-            var allErrors = new List<ImportError>(parseErrors);
-
-            // Check for duplicates based on skipDuplicates setting
-            var duplicateInfo = await AnalyzeDuplicatesAsync(customers, job.CompanyId, context, skipDuplicates);
-
-            if (skipDuplicates)
-            {
-                _logger.LogInformation("Skip duplicates enabled: {SkippedCount} existing customers will be skipped",
-                    duplicateInfo.SkippedEmails.Count);
-            }
-            else
-            {
-                _logger.LogInformation("Skip duplicates disabled: {UpdateCount} existing customers will be updated",
-                    duplicateInfo.ExistingEmails.Count);
-            }
-
-            // Store validation errors (only actual parsing/validation errors, not duplicates)
-            if (allErrors.Count > 0)
-            {
-                job.SetValidationErrors(allErrors);
-                _logger.LogWarning("Import job {JobId} has {ErrorCount} validation errors", jobId, allErrors.Count);
-            }
-
-            // Raise validation completed event
-            job.Raise(new ImportJobValidationCompletedDomainEvent(
-                job.Id,
-                job.UserId,
-                totalRecords,
-                allErrors.Count,
-                allErrors.Count > 0
-            ));
-
-            job.Status = ImportJobStatus.Pending;
-            await context.SaveChangesAsync();
-
-            // AUTO-PROCESS: Queue processing job immediately after successful validation
-            if (allErrors.Count == 0 || !allErrors.Any(e => IsCriticalError(e)))
-            {
-                _logger.LogInformation("Validation successful for job {JobId}, auto-queuing processing", jobId);
-
-                var processingJobId = _backgroundJobClient.Enqueue<IImportBackgroundService>(
-                    "imports",
-                    service => service.ProcessImportAsync(jobId));
-
-                _logger.LogInformation("Auto-queued processing job {HangfireJobId} for import {ImportJobId}",
-                    processingJobId, jobId);
-            }
-            else
-            {
-                _logger.LogWarning("Import job {JobId} has critical errors, skipping auto-processing", jobId);
-            }
-
-            _logger.LogInformation("Validation completed for import job {JobId}. Total: {TotalRecords}, Errors: {ErrorCount}",
-                jobId, totalRecords, allErrors.Count);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Failed to validate import file for job {JobId}", jobId);
-            job.Fail($"Validation failed: {ex.Message}");
-            await context.SaveChangesAsync();
-            throw;
-        }
-    }
-
+    // Fixed ProcessImportFileAsync method with proper error handling using fresh context
     public async Task ProcessImportFileAsync(Guid jobId)
     {
         using var scope = _serviceProvider.CreateScope();
@@ -242,15 +151,181 @@ public class CustomerImportService : ICustomerImportService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to process import file for job {JobId}", jobId);
+            _logger.LogError(ex, "Failed to process import file for job {JobId}. Error: {Error}", jobId, ex.Message);
 
-            job.Fail($"Import failed: {ex.Message}");
-            job.Raise(new ImportJobCompletedDomainEvent(
-                job.Id, job.UserId, ImportJobStatus.Failed,
-                job.TotalRecords, job.SuccessfulRecords, job.FailedRecords, job.SkippedRecords,
-                ex.Message, null));
+            // Log inner exceptions
+            var innerEx = ex.InnerException;
+            while (innerEx != null)
+            {
+                _logger.LogError("Inner exception: {InnerError}", innerEx.Message);
+                innerEx = innerEx.InnerException;
+            }
 
+            // Use a FRESH context to update the job status to avoid the same error
+            try
+            {
+                using var freshScope = _serviceProvider.CreateScope();
+                var freshContext = freshScope.ServiceProvider.GetRequiredService<IApplicationDbContext>();
+
+                // Get the job with the fresh context
+                var freshJob = await freshContext.ImportJobs.FindAsync(jobId);
+                if (freshJob != null)
+                {
+                    // Update the job status to failed
+                    freshJob.Fail($"Import failed: {ex.Message}");
+
+                    // Raise failure event
+                    freshJob.Raise(new ImportJobCompletedDomainEvent(
+                        freshJob.Id, freshJob.UserId, ImportJobStatus.Failed,
+                        freshJob.TotalRecords, freshJob.SuccessfulRecords, freshJob.FailedRecords, freshJob.SkippedRecords,
+                        ex.Message, null));
+
+                    await freshContext.SaveChangesAsync();
+
+                    _logger.LogInformation("Successfully updated import job {JobId} status to Failed using fresh context", jobId);
+                }
+                else
+                {
+                    _logger.LogError("Could not find import job {JobId} in fresh context to update status", jobId);
+                }
+            }
+            catch (Exception saveEx)
+            {
+                _logger.LogError(saveEx, "Failed to update job status to failed for job {JobId} even with fresh context. Error: {SaveError}",
+                    jobId, saveEx.Message);
+
+                // Try direct SQL update as last resort
+                try
+                {
+                    using var directScope = _serviceProvider.CreateScope();
+                    var directContext = directScope.ServiceProvider.GetRequiredService<IApplicationDbContext>();
+
+                    await directContext.Database.ExecuteSqlRawAsync(
+                        "UPDATE import_jobs SET status = {0}, error_message = {1}, completed_at = {2} WHERE id = {3}",
+                        (int)ImportJobStatus.Failed,
+                        $"Import failed: {ex.Message}",
+                        DateTime.UtcNow,
+                        jobId);
+
+                    _logger.LogInformation("Successfully updated import job {JobId} status to Failed using direct SQL", jobId);
+                }
+                catch (Exception sqlEx)
+                {
+                    _logger.LogError(sqlEx, "Failed to update job status even with direct SQL for job {JobId}", jobId);
+                }
+            }
+
+            throw;
+        }
+    }
+
+    // Also fix ValidateImportFileAsync with the same pattern
+    public async Task ValidateImportFileAsync(Guid jobId, bool skipDuplicates)
+    {
+        using var scope = _serviceProvider.CreateScope();
+        var context = scope.ServiceProvider.GetRequiredService<IApplicationDbContext>();
+
+        var job = await context.ImportJobs.FindAsync(jobId);
+        if (job == null)
+        {
+            _logger.LogWarning("Import job {JobId} not found for validation", jobId);
+            return;
+        }
+
+        try
+        {
+            _logger.LogInformation("Starting validation for import job {JobId} (skipDuplicates: {SkipDuplicates})",
+                jobId, skipDuplicates);
+
+            job.Status = ImportJobStatus.Validating;
             await context.SaveChangesAsync();
+
+            // Read and parse CSV file
+            var fileContent = await _fileStorageService.ReadFileAsync(job.FilePath);
+            _logger.LogInformation("Read file content, length: {Length} characters", fileContent.Length);
+
+            var (customers, totalRecords, parseErrors) = ParseCsvFile(fileContent, job.ImportSource!);
+            _logger.LogInformation("Parsed {CustomerCount} customers from {TotalRecords} records", customers.Count, totalRecords);
+
+            job.TotalRecords = totalRecords;
+            var allErrors = new List<ImportError>(parseErrors);
+
+            // Check for duplicates based on skipDuplicates setting
+            var duplicateInfo = await AnalyzeDuplicatesAsync(customers, job.CompanyId, context, skipDuplicates);
+
+            if (skipDuplicates)
+            {
+                _logger.LogInformation("Skip duplicates enabled: {SkippedCount} existing customers will be skipped",
+                    duplicateInfo.SkippedEmails.Count);
+            }
+            else
+            {
+                _logger.LogInformation("Skip duplicates disabled: {UpdateCount} existing customers will be updated",
+                    duplicateInfo.ExistingEmails.Count);
+            }
+
+            // Store validation errors (only actual parsing/validation errors, not duplicates)
+            if (allErrors.Count > 0)
+            {
+                job.SetValidationErrors(allErrors);
+                _logger.LogWarning("Import job {JobId} has {ErrorCount} validation errors", jobId, allErrors.Count);
+            }
+
+            // Raise validation completed event
+            job.Raise(new ImportJobValidationCompletedDomainEvent(
+                job.Id,
+                job.UserId,
+                totalRecords,
+                allErrors.Count,
+                allErrors.Count > 0
+            ));
+
+            job.Status = ImportJobStatus.Pending;
+            await context.SaveChangesAsync();
+
+            // AUTO-PROCESS: Queue processing job immediately after successful validation
+            if (allErrors.Count == 0 || !allErrors.Any(e => IsCriticalError(e)))
+            {
+                _logger.LogInformation("Validation successful for job {JobId}, auto-queuing processing", jobId);
+
+                var processingJobId = _backgroundJobClient.Enqueue<IImportBackgroundService>(
+                    "imports",
+                    service => service.ProcessImportAsync(jobId));
+
+                _logger.LogInformation("Auto-queued processing job {HangfireJobId} for import {ImportJobId}",
+                    processingJobId, jobId);
+            }
+            else
+            {
+                _logger.LogWarning("Import job {JobId} has critical errors, skipping auto-processing", jobId);
+            }
+
+            _logger.LogInformation("Validation completed for import job {JobId}. Total: {TotalRecords}, Errors: {ErrorCount}",
+                jobId, totalRecords, allErrors.Count);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to validate import file for job {JobId}. Error: {Error}", jobId, ex.Message);
+
+            // Use a FRESH context to update the job status
+            try
+            {
+                using var freshScope = _serviceProvider.CreateScope();
+                var freshContext = freshScope.ServiceProvider.GetRequiredService<IApplicationDbContext>();
+
+                var freshJob = await freshContext.ImportJobs.FindAsync(jobId);
+                if (freshJob != null)
+                {
+                    freshJob.Fail($"Validation failed: {ex.Message}");
+                    await freshContext.SaveChangesAsync();
+                    _logger.LogInformation("Successfully updated import job {JobId} status to Failed during validation using fresh context", jobId);
+                }
+            }
+            catch (Exception saveEx)
+            {
+                _logger.LogError(saveEx, "Failed to update job status to failed for job {JobId} even with fresh context during validation", jobId);
+            }
+
             throw;
         }
     }
@@ -418,22 +493,22 @@ public class CustomerImportService : ICustomerImportService
     }
 
     private async Task ProcessBatchWithDuplicateHandling(
-        List<CustomerImportData> batch,
-        ImportJob job,
-        ImportJobResult result,
-        Dictionary<string, Customer> existingCustomers,
-        int batchStartIndex,
-        IApplicationDbContext context,
-        bool skipDuplicates,
-        ICustomerAggregationService customerAggregationService)
+    List<CustomerImportData> batch,
+    ImportJob job,
+    ImportJobResult result,
+    Dictionary<string, Customer> existingCustomers,
+    int batchStartIndex,
+    IApplicationDbContext context,
+    bool skipDuplicates,
+    ICustomerAggregationService customerAggregationService)
     {
         foreach (var (importData, index) in batch.Select((c, i) => (c, i)))
         {
+            var emailKey = importData.Email.ToLower();
+            var rowNumber = batchStartIndex + index + 2; // +2 for header and 1-based indexing
+
             try
             {
-                var emailKey = importData.Email.ToLower();
-                var rowNumber = batchStartIndex + index + 2; // +2 for header and 1-based indexing
-
                 if (existingCustomers.TryGetValue(emailKey, out var existingCustomer))
                 {
                     if (skipDuplicates)
@@ -450,6 +525,8 @@ public class CustomerImportService : ICustomerImportService
 
                         try
                         {
+                            _logger.LogDebug("Updating existing customer {Email} with aggregation service", importData.Email);
+
                             await customerAggregationService.AddOrUpdateCustomerDataAsync(
                                 existingCustomer.Id,
                                 sourceData,
@@ -459,19 +536,30 @@ public class CustomerImportService : ICustomerImportService
                             );
 
                             result.UpdatedRecords++;
-                            _logger.LogDebug("Updated existing customer {Email} using aggregation service in job {JobId}",
+                            _logger.LogDebug("Successfully updated existing customer {Email} using aggregation service in job {JobId}",
                                 importData.Email, job.Id);
                         }
                         catch (Exception ex)
                         {
-                            _logger.LogWarning(ex, "Failed to update customer {Email} via aggregation service", importData.Email);
+                            _logger.LogError(ex, "Failed to update customer {Email} via aggregation service. Error: {Error}",
+                                importData.Email, ex.Message);
+
+                            // Log the inner exception details
+                            var innerEx = ex.InnerException;
+                            while (innerEx != null)
+                            {
+                                _logger.LogError("Inner exception: {InnerError}", innerEx.Message);
+                                innerEx = innerEx.InnerException;
+                            }
+
                             result.FailedRecords++;
                             result.Errors.Add(new ImportError
                             {
                                 RowNumber = rowNumber,
                                 Email = importData.Email,
                                 ErrorMessage = $"Update failed: {ex.Message}",
-                                FieldName = "AggregationService"
+                                FieldName = "AggregationService",
+                                ErrorTime = DateTime.UtcNow
                             });
                             continue;
                         }
@@ -481,38 +569,84 @@ public class CustomerImportService : ICustomerImportService
                 }
                 else
                 {
-                    // Create new customer
-                    var newCustomer = CreateCustomerFromImportData(importData, job);
-
-                    context.Customers.Add(newCustomer);
-                    await context.SaveChangesAsync(); // Save to get the ID
-
-                    // Now add the import data using aggregation service
-                    var sourceData = ConvertImportDataToSourceData(importData);
-
                     try
                     {
-                        await customerAggregationService.AddOrUpdateCustomerDataAsync(
-                            newCustomer.Id,
-                            sourceData,
-                            job.ImportSource ?? "manual_import",
-                            job.Id.ToString(),
-                            job.UserId
-                        );
+                        _logger.LogDebug("Creating new customer {Email}", importData.Email);
 
-                        result.NewRecords++;
-                        result.SuccessfulRecords++;
-                        existingCustomers[emailKey] = newCustomer; // Add to local cache
+                        // Create new customer
+                        var newCustomer = CreateCustomerFromImportData(importData, job);
 
-                        _logger.LogDebug("Added new customer {Email} with aggregated data at row {RowNumber} in job {JobId}",
-                            importData.Email, rowNumber, job.Id);
+                        context.Customers.Add(newCustomer);
+
+                        _logger.LogDebug("Saving new customer {Email} to get ID", importData.Email);
+                        await context.SaveChangesAsync(); // Save to get the ID
+
+                        _logger.LogDebug("New customer {Email} saved with ID {CustomerId}", importData.Email, newCustomer.Id);
+
+                        // Now add the import data using aggregation service
+                        var sourceData = ConvertImportDataToSourceData(importData);
+
+                        try
+                        {
+                            _logger.LogDebug("Adding aggregated data for new customer {Email}", importData.Email);
+
+                            await customerAggregationService.AddOrUpdateCustomerDataAsync(
+                                newCustomer.Id,
+                                sourceData,
+                                job.ImportSource ?? "manual_import",
+                                job.Id.ToString(),
+                                job.UserId
+                            );
+
+                            result.NewRecords++;
+                            result.SuccessfulRecords++;
+                            existingCustomers[emailKey] = newCustomer; // Add to local cache
+
+                            _logger.LogDebug("Successfully added new customer {Email} with aggregated data at row {RowNumber} in job {JobId}",
+                                importData.Email, rowNumber, job.Id);
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(ex, "Failed to add aggregated data for new customer {Email}. Error: {Error}",
+                                importData.Email, ex.Message);
+
+                            // Log the inner exception details
+                            var innerEx = ex.InnerException;
+                            while (innerEx != null)
+                            {
+                                _logger.LogError("Inner exception: {InnerError}", innerEx.Message);
+                                innerEx = innerEx.InnerException;
+                            }
+
+                            // Customer was created but aggregated data failed - still count as success
+                            result.NewRecords++;
+                            result.SuccessfulRecords++;
+                            existingCustomers[emailKey] = newCustomer; // Add to local cache anyway
+                        }
                     }
                     catch (Exception ex)
                     {
-                        _logger.LogWarning(ex, "Failed to add aggregated data for new customer {Email}", importData.Email);
-                        // Customer was created but aggregated data failed - still count as success
-                        result.NewRecords++;
-                        result.SuccessfulRecords++;
+                        _logger.LogError(ex, "Failed to create new customer {Email}. Error: {Error}",
+                            importData.Email, ex.Message);
+
+                        // Log the inner exception details
+                        var innerEx = ex.InnerException;
+                        while (innerEx != null)
+                        {
+                            _logger.LogError("Inner exception: {InnerError}", innerEx.Message);
+                            innerEx = innerEx.InnerException;
+                        }
+
+                        result.FailedRecords++;
+                        result.Errors.Add(new ImportError
+                        {
+                            RowNumber = rowNumber,
+                            Email = importData.Email,
+                            ErrorMessage = $"Customer creation failed: {ex.Message}",
+                            FieldName = "CustomerCreation",
+                            ErrorTime = DateTime.UtcNow
+                        });
+                        continue;
                     }
                 }
 
@@ -520,25 +654,54 @@ public class CustomerImportService : ICustomerImportService
             }
             catch (Exception ex)
             {
+                _logger.LogError(ex, "Unexpected error processing customer {Email} at row {RowNumber}. Error: {Error}",
+                    importData.Email, rowNumber, ex.Message);
+
+                // Log the inner exception details
+                var innerEx = ex.InnerException;
+                while (innerEx != null)
+                {
+                    _logger.LogError("Inner exception: {InnerError}", innerEx.Message);
+                    innerEx = innerEx.InnerException;
+                }
+
                 result.FailedRecords++;
                 var error = new ImportError
                 {
-                    RowNumber = batchStartIndex + index + 2,
+                    RowNumber = rowNumber,
                     Email = importData.Email,
                     ErrorMessage = ex.Message,
                     FieldName = "General",
-                    RawData = $"FirstName: {importData.FirstName}, LastName: {importData.LastName}, Email: {importData.Email}"
+                    RawData = $"FirstName: {importData.FirstName}, LastName: {importData.LastName}, Email: {importData.Email}",
+                    ErrorTime = DateTime.UtcNow
                 };
 
                 result.Errors.Add(error);
-
-                _logger.LogWarning(ex, "Failed to import customer {Email} at row {RowNumber} in job {JobId}",
-                    importData.Email, error.RowNumber, job.Id);
             }
         }
 
-        await context.SaveChangesAsync();
+        try
+        {
+            _logger.LogDebug("Saving batch changes for {BatchSize} customers", batch.Count);
+            await context.SaveChangesAsync();
+            _logger.LogDebug("Successfully saved batch changes");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to save batch changes. Error: {Error}", ex.Message);
+
+            // Log the inner exception details
+            var innerEx = ex.InnerException;
+            while (innerEx != null)
+            {
+                _logger.LogError("Inner exception: {InnerError}", innerEx.Message);
+                innerEx = innerEx.InnerException;
+            }
+
+            throw; // Re-throw to be handled by the calling method
+        }
     }
+
 
     private Customer CreateCustomerFromImportData(CustomerImportData importData, ImportJob job)
     {
@@ -571,60 +734,61 @@ public class CustomerImportService : ICustomerImportService
         return customer;
     }
 
-    private Dictionary<string, object> ConvertImportDataToSourceData(CustomerImportData importData)
-    {
-        var sourceData = new Dictionary<string, object>();
+ private Dictionary<string, object> ConvertImportDataToSourceData(CustomerImportData importData)
+{
+    var sourceData = new Dictionary<string, object>();
 
-        // Basic info
-        if (!string.IsNullOrEmpty(importData.Email))
-            sourceData["email"] = importData.Email;
-        if (!string.IsNullOrEmpty(importData.FirstName))
-            sourceData["first_name"] = importData.FirstName;
-        if (!string.IsNullOrEmpty(importData.LastName))
-            sourceData["last_name"] = importData.LastName;
-        if (!string.IsNullOrEmpty(importData.Phone))
-            sourceData["phone"] = importData.Phone;
-        if (!string.IsNullOrEmpty(importData.CompanyName))
-            sourceData["company_name"] = importData.CompanyName;
-        if (!string.IsNullOrEmpty(importData.JobTitle))
-            sourceData["job_title"] = importData.JobTitle;
+    // Basic info
+    if (!string.IsNullOrEmpty(importData.Email))
+        sourceData["email"] = importData.Email;
+    if (!string.IsNullOrEmpty(importData.FirstName))
+        sourceData["first_name"] = importData.FirstName;
+    if (!string.IsNullOrEmpty(importData.LastName))
+        sourceData["last_name"] = importData.LastName;
+    if (!string.IsNullOrEmpty(importData.Phone))
+        sourceData["phone"] = importData.Phone;
+    if (!string.IsNullOrEmpty(importData.CompanyName))
+        sourceData["company_name"] = importData.CompanyName;
+    if (!string.IsNullOrEmpty(importData.JobTitle))
+        sourceData["job_title"] = importData.JobTitle;
 
-        // Payment data
-        if (importData.SubscriptionStatus.HasValue)
-            sourceData["subscription_status"] = importData.SubscriptionStatus.Value.ToString();
-        if (importData.Plan.HasValue)
-            sourceData["plan"] = importData.Plan.Value.ToString();
-        if (importData.MonthlyRecurringRevenue.HasValue)
-            sourceData["mrr"] = importData.MonthlyRecurringRevenue.Value;
-        if (importData.LifetimeValue.HasValue)
-            sourceData["lifetime_value"] = importData.LifetimeValue.Value;
-        if (importData.SubscriptionStartDate.HasValue)
-            sourceData["subscription_start_date"] = importData.SubscriptionStartDate.Value;
-        if (importData.PaymentStatus.HasValue)
-            sourceData["payment_status"] = importData.PaymentStatus.Value.ToString();
-        if (importData.NextBillingDate.HasValue)
-            sourceData["next_billing_date"] = importData.NextBillingDate.Value;
-        if (importData.PaymentFailureCount.HasValue)
-            sourceData["payment_failures"] = importData.PaymentFailureCount.Value;
+    // Payment data
+    if (importData.SubscriptionStatus.HasValue)
+        sourceData["subscription_status"] = importData.SubscriptionStatus.Value.ToString();
+    if (importData.Plan.HasValue)
+        sourceData["plan"] = importData.Plan.Value.ToString();
+    if (importData.MonthlyRecurringRevenue.HasValue)
+        sourceData["mrr"] = importData.MonthlyRecurringRevenue.Value;
+    if (importData.LifetimeValue.HasValue)
+        sourceData["lifetime_value"] = importData.LifetimeValue.Value;
+    if (importData.SubscriptionStartDate.HasValue)
+        sourceData["subscription_start_date"] = DateTime.SpecifyKind(importData.SubscriptionStartDate.Value, DateTimeKind.Utc);
+    if (importData.PaymentStatus.HasValue)
+        sourceData["payment_status"] = importData.PaymentStatus.Value.ToString();
+    if (importData.NextBillingDate.HasValue)
+        sourceData["next_billing_date"] = DateTime.SpecifyKind(importData.NextBillingDate.Value, DateTimeKind.Utc);
+    if (importData.PaymentFailureCount.HasValue)
+        sourceData["payment_failures"] = importData.PaymentFailureCount.Value;
 
-        // Engagement data
-        if (importData.LastLoginDate.HasValue)
-            sourceData["last_login"] = importData.LastLoginDate.Value;
-        if (importData.WeeklyLoginFrequency.HasValue)
-            sourceData["weekly_logins"] = importData.WeeklyLoginFrequency.Value;
-        if (importData.FeatureUsagePercentage.HasValue)
-            sourceData["feature_usage"] = importData.FeatureUsagePercentage.Value;
+    // Engagement data
+    if (importData.LastLoginDate.HasValue)
+        sourceData["last_login"] = DateTime.SpecifyKind(importData.LastLoginDate.Value, DateTimeKind.Utc);
+    if (importData.WeeklyLoginFrequency.HasValue)
+        sourceData["weekly_logins"] = importData.WeeklyLoginFrequency.Value;
+    if (importData.FeatureUsagePercentage.HasValue)
+        sourceData["feature_usage"] = importData.FeatureUsagePercentage.Value;
 
-        // Support data
-        if (importData.SupportTicketCount.HasValue)
-            sourceData["total_tickets"] = importData.SupportTicketCount.Value;
+    // Support data
+    if (importData.SupportTicketCount.HasValue)
+        sourceData["total_tickets"] = importData.SupportTicketCount.Value;
 
-        // Other fields
-        if (!string.IsNullOrEmpty(importData.ExternalId))
-            sourceData["external_id"] = importData.ExternalId;
+    // Other fields
+    if (!string.IsNullOrEmpty(importData.ExternalId))
+        sourceData["external_id"] = importData.ExternalId;
 
-        return sourceData;
-    }
+    return sourceData;
+}
+
 
     private ImportSummary CalculateInsights(List<Customer> customers)
     {
@@ -659,8 +823,8 @@ public class CustomerImportService : ICustomerImportService
 
     // Updated CSV parsing to use new DTO
     private static (List<CustomerImportData> customers, int totalRecords, List<ImportError> errors) ParseCsvFile(
-        string fileContent,
-        string importSource)
+      string fileContent,
+      string importSource)
     {
         var customers = new List<CustomerImportData>();
         var errors = new List<ImportError>();
@@ -673,7 +837,8 @@ public class CustomerImportService : ICustomerImportService
                 RowNumber = 1,
                 Email = "",
                 ErrorMessage = "File must contain at least a header row and one data row",
-                FieldName = "File"
+                FieldName = "File",
+                ErrorTime = DateTime.UtcNow
             });
             return (customers, lines.Length, errors);
         }
@@ -694,7 +859,8 @@ public class CustomerImportService : ICustomerImportService
                         Email = "",
                         ErrorMessage = $"Row has {values.Length} columns but header has {headers.Length} columns",
                         FieldName = "General",
-                        RawData = lines[i]
+                        RawData = lines[i],
+                        ErrorTime = DateTime.UtcNow
                     });
                     continue;
                 }
@@ -719,13 +885,15 @@ public class CustomerImportService : ICustomerImportService
                     Email = "",
                     ErrorMessage = $"Error parsing row: {ex.Message}",
                     FieldName = "General",
-                    RawData = lines[i]
+                    RawData = lines[i],
+                    ErrorTime = DateTime.UtcNow
                 });
             }
         }
 
         return (customers, lines.Length - 1, errors); // -1 to exclude header
     }
+
 
     private static string[] ParseCsvLine(string line)
     {
@@ -909,7 +1077,8 @@ public class CustomerImportService : ICustomerImportService
                 RowNumber = rowNumber,
                 Email = importData.Email ?? "",
                 ErrorMessage = "Email is required",
-                FieldName = "Email"
+                FieldName = "Email",
+                ErrorTime = DateTime.UtcNow
             });
         }
         else if (!IsValidEmail(importData.Email))
@@ -919,7 +1088,8 @@ public class CustomerImportService : ICustomerImportService
                 RowNumber = rowNumber,
                 Email = importData.Email,
                 ErrorMessage = "Invalid email format",
-                FieldName = "Email"
+                FieldName = "Email",
+                ErrorTime = DateTime.UtcNow
             });
         }
 
@@ -930,7 +1100,8 @@ public class CustomerImportService : ICustomerImportService
                 RowNumber = rowNumber,
                 Email = importData.Email ?? "",
                 ErrorMessage = "Either first name or last name is required",
-                FieldName = "Name"
+                FieldName = "Name",
+                ErrorTime = DateTime.UtcNow
             });
         }
 
@@ -941,13 +1112,13 @@ public class CustomerImportService : ICustomerImportService
                 RowNumber = rowNumber,
                 Email = importData.Email ?? "",
                 ErrorMessage = "Monthly revenue cannot be negative",
-                FieldName = "MonthlyRecurringRevenue"
+                FieldName = "MonthlyRecurringRevenue",
+                ErrorTime = DateTime.UtcNow
             });
         }
 
         return errors;
     }
-
     private static bool IsValidEmail(string email)
     {
         var emailRegex = new Regex(@"^[^@\s]+@[^@\s]+\.[^@\s]+$", RegexOptions.IgnoreCase);

@@ -1,4 +1,5 @@
 ﻿using Application.Abstractions.Messaging;
+using Application.Customers.Commands;
 using Application.Customers.Queries;
 using DataTransferObjects.Common;
 using DataTransferObjects.Customers;
@@ -37,6 +38,10 @@ internal sealed class CustomerEndpoints : IEndpoint
         group.MapGet("{customerId:guid}/activities", GetCustomerActivities)
             .WithName("GetCustomerActivities")
             .WithSummary("Get activities for a specific customer");
+
+        group.MapDelete("", DeleteCustomers)
+            .WithName("DeleteCustomers")
+            .WithSummary("Delete multiple customers and all their data");
     }
 
     private static async Task<IResult> GetCustomers(
@@ -104,5 +109,27 @@ internal sealed class CustomerEndpoints : IEndpoint
         Result<PagedResult<CustomerActivityResponse>> result = await handler.Handle(query, cancellationToken);
 
         return result.Match(Results.Ok, CustomResults.Problem);
+    }
+
+    public sealed record DeleteCustomersRequest(List<Guid> CustomerIds);
+    private static async Task<IResult> DeleteCustomers(
+    [FromBody] DeleteCustomersRequest request,
+    ICommandHandler<DeleteCustomersCommand, DeleteCustomersResponse> handler,
+    CancellationToken cancellationToken)
+    {
+        var command = new DeleteCustomersCommand(request.CustomerIds ?? new List<Guid>());
+        Result<DeleteCustomersResponse> result = await handler.Handle(command, cancellationToken);
+
+        return result.Match(
+            response => Results.Ok(new
+            {
+                Message = $"Deletion completed. {response.SuccessfullyDeleted} of {response.TotalRequested} customers deleted successfully.",
+                TotalRequested = response.TotalRequested,
+                SuccessfullyDeleted = response.SuccessfullyDeleted,
+                Failed = response.Failed,
+                Errors = response.Errors.Take(10),
+                HasMoreErrors = response.Errors.Count > 10
+            }),
+            CustomResults.Problem);
     }
 }

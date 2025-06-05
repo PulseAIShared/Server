@@ -27,7 +27,7 @@ namespace Infrastructure.Services
             catch (Exception ex)
             {
                 logger.LogError(ex, "Failed to validate import job {JobId} in background", jobId);
-                throw; // Re-throw so Hangfire can handle retries
+                throw; 
             }
         }
 
@@ -45,7 +45,7 @@ namespace Infrastructure.Services
             catch (Exception ex)
             {
                 logger.LogError(ex, "Failed to process import job {JobId} in background", jobId);
-                throw; // Re-throw so Hangfire can handle retries
+                throw;
             }
         }
 
@@ -63,7 +63,7 @@ namespace Infrastructure.Services
             catch (Exception ex)
             {
                 logger.LogError(ex, "Failed to cancel import job {JobId} in background", jobId);
-                throw; // Re-throw so Hangfire can handle retries
+                throw;
             }
         }
     }
