@@ -21,6 +21,14 @@ builder.Services
     .AddPresentation()
     .AddInfrastructure(builder.Configuration);
 
+builder.Services.AddDistributedMemoryCache();
+builder.Services.AddSession(options =>
+{
+    options.IdleTimeout = TimeSpan.FromMinutes(30);
+    options.Cookie.HttpOnly = true;
+    options.Cookie.IsEssential = true;
+    options.Cookie.SameSite = SameSiteMode.Lax;
+});
 
 builder.Services.AddEndpoints(Assembly.GetExecutingAssembly());
 
@@ -45,7 +53,7 @@ app.UseHangfireDashboard("/hangfire", new DashboardOptions
 {
     Authorization = new[] { new HangfireAuthorizationFilter() }
 });
-
+app.UseSession();
 app.MapHub<NotificationHub>("/hubs/notifications");
 
 if (app.Environment.IsDevelopment())

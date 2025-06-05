@@ -8,6 +8,8 @@ using Infrastructure.Authentication;
 using Infrastructure.Authorization;
 using Infrastructure.Database;
 using Infrastructure.DomainEvents;
+using Infrastructure.Integrations.Services.Interfaces;
+using Infrastructure.Integrations.Services;
 using Infrastructure.Services;
 using Infrastructure.Time;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -64,6 +66,24 @@ public static class DependencyInjection
         services.AddScoped<IImportBackgroundService, ImportBackgroundService>();
         // Notification service
         services.AddScoped<INotificationService, NotificationService>();
+
+
+        services.AddHttpClient<HubSpotIntegrationService>(client =>
+        {
+            client.BaseAddress = new Uri("https://api.hubapi.com/");
+            client.DefaultRequestHeaders.Add("User-Agent", "PulseAI-Integration/1.0");
+            client.Timeout = TimeSpan.FromMinutes(5);
+        });
+
+        // Register integration services
+        services.AddScoped<HubSpotIntegrationService>();
+        services.AddScoped<IIntegrationService, HubSpotIntegrationService>();
+
+        // Integration factory for multiple providers
+        services.AddScoped<IIntegrationServiceFactory, IntegrationServiceFactory>();
+
+        // Background job for automatic syncing
+        services.AddScoped<IIntegrationSyncService, IntegrationSyncService>();
 
         return services;
     }

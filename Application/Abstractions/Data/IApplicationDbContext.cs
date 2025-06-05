@@ -1,6 +1,7 @@
 ﻿
 using Domain.Customers;
 using Domain.Imports;
+using Domain.Integration;
 using Domain.Notification;
 using Domain.Segments;
 using Domain.Todos;
@@ -21,6 +22,6 @@ public interface IApplicationDbContext
     DbSet<CustomerSegment> CustomerSegments { get; }
     DbSet<Company> Companies { get; }
     DbSet<CompanyInvitation> CompanyInvitations { get; }
-    DbSet<TodoItem> TodoItems { get; }
+    DbSet<Integration> Integrations { get; }
     Task<int> SaveChangesAsync(CancellationToken cancellationToken = default);
 }

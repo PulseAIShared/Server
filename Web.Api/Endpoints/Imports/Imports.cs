@@ -26,10 +26,6 @@ internal sealed class ImportEndpoints : IEndpoint
             .WithName("UploadImportFile")
             .WithSummary("Upload a CSV file for customer import");
 
-        // Confirm and process import
-        group.MapPost("{importJobId:guid}/confirm", ConfirmImport)
-            .WithName("ConfirmImport")
-            .WithSummary("Confirm and process the validated import");
 
         // Get import job status
         group.MapGet("{importJobId:guid}/status", GetImportStatus)
@@ -100,27 +96,6 @@ internal sealed class ImportEndpoints : IEndpoint
                 ImportJobId = importJobId,
                 Message = "File uploaded successfully and validation started",
                 Status = ImportJobStatus.Validating.ToString()
-            }),
-            CustomResults.Problem
-        );
-    }
-
-
-
-    private static async Task<IResult> ConfirmImport(
-        Guid importJobId,
-        ICommandHandler<ConfirmImportJobCommand, bool> handler,
-        CancellationToken cancellationToken)
-    {
-        var command = new ConfirmImportJobCommand(importJobId);
-        Result<bool> result = await handler.Handle(command, cancellationToken);
-
-        return result.Match(
-            success => Results.Ok(new
-            {
-                ImportJobId = importJobId,
-                Message = "Import confirmed and processing started",
-                Status = ImportJobStatus.Processing.ToString()
             }),
             CustomResults.Problem
         );

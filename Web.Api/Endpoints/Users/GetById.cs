@@ -2,6 +2,7 @@
 using Application.Users.GetById;
 using DataTransferObjects.Users.Responses;
 using SharedKernel;
+
 using Web.Api.Extensions;
 using Web.Api.Infrastructure;
 
