@@ -153,7 +153,41 @@ namespace Application.Services
                     }
                     break;
 
-                    // Similar for other data types...
+                case "marketing":
+                    if (customer.MarketingDataSources.Any(m => m.Source == sourceName && m.IsActive))
+                    {
+                        foreach (var marketingData in customer.MarketingDataSources)
+                            marketingData.IsPrimarySource = false;
+
+                        var primaryMarketing = customer.MarketingDataSources.First(m => m.Source == sourceName);
+                        primaryMarketing.IsPrimarySource = true;
+                        customer.PrimaryMarketingSource = sourceName;
+                    }
+                    break;
+
+                case "support":
+                    if (customer.SupportDataSources.Any(s => s.Source == sourceName && s.IsActive))
+                    {
+                        foreach (var supportData in customer.SupportDataSources)
+                            supportData.IsPrimarySource = false;
+
+                        var primarySupport = customer.SupportDataSources.First(s => s.Source == sourceName);
+                        primarySupport.IsPrimarySource = true;
+                        customer.PrimarySupportSource = sourceName;
+                    }
+                    break;
+
+                case "engagement":
+                    if (customer.EngagementDataSources.Any(e => e.Source == sourceName && e.IsActive))
+                    {
+                        foreach (var engagementData in customer.EngagementDataSources)
+                            engagementData.IsPrimarySource = false;
+
+                        var primaryEngagement = customer.EngagementDataSources.First(e => e.Source == sourceName);
+                        primaryEngagement.IsPrimarySource = true;
+                        customer.PrimaryEngagementSource = sourceName;
+                    }
+                    break;
             }
 
             await _context.SaveChangesAsync();
@@ -220,6 +254,8 @@ namespace Application.Services
                         }
                     }
                     break;
+
+                    // Similar logic for other data types...
             }
 
             if (deactivated)
@@ -316,7 +352,23 @@ namespace Application.Services
                 totalWeight += weight * 0.3m;
             }
 
-            // Similar for support and marketing data...
+            // Support risk calculation (20% weight)
+            foreach (var supportData in customer.SupportDataSources)
+            {
+                var weight = _sourcePriorities.GetValueOrDefault(supportData.Source, 10) / 100m;
+                var risk = CalculateSupportRisk(supportData);
+                totalRisk += risk * weight * 0.2m;
+                totalWeight += weight * 0.2m;
+            }
+
+            // Marketing risk calculation (10% weight)
+            foreach (var marketingData in customer.MarketingDataSources)
+            {
+                var weight = _sourcePriorities.GetValueOrDefault(marketingData.Source, 10) / 100m;
+                var risk = CalculateMarketingRisk(marketingData);
+                totalRisk += risk * weight * 0.1m;
+                totalWeight += weight * 0.1m;
+            }
 
             // Normalize by total weight to get final score
             var finalRisk = totalWeight > 0 ? totalRisk / totalWeight : 0;
@@ -332,11 +384,13 @@ namespace Application.Services
             string? importBatchId,
             Guid? importedByUserId)
         {
-            var externalId = sourceData.GetValueOrDefault("id")?.ToString() ?? "";
+            var externalId = sourceData.GetValueOrDefault("id")?.ToString() ??
+                            sourceData.GetValueOrDefault("external_id")?.ToString() ?? "";
 
             // Find existing CRM data for this source
             var existingCrmData = customer.CrmDataSources
-                .FirstOrDefault(c => c.Source == sourceName && (c.ExternalId == externalId || string.IsNullOrEmpty(externalId)));
+                .FirstOrDefault(c => c.Source == sourceName &&
+                    (c.ExternalId == externalId || string.IsNullOrEmpty(externalId)));
 
             if (existingCrmData != null)
             {
@@ -385,10 +439,12 @@ namespace Application.Services
             string? importBatchId,
             Guid? importedByUserId)
         {
-            var externalId = sourceData.GetValueOrDefault("id")?.ToString() ?? "";
+            var externalId = sourceData.GetValueOrDefault("id")?.ToString() ??
+                            sourceData.GetValueOrDefault("external_id")?.ToString() ?? "";
 
             var existingPaymentData = customer.PaymentDataSources
-                .FirstOrDefault(p => p.Source == sourceName && (p.ExternalId == externalId || string.IsNullOrEmpty(externalId)));
+                .FirstOrDefault(p => p.Source == sourceName &&
+                    (p.ExternalId == externalId || string.IsNullOrEmpty(externalId)));
 
             if (existingPaymentData != null)
             {
@@ -428,6 +484,153 @@ namespace Application.Services
             }
         }
 
+        private async Task AddOrUpdateMarketingDataAsync(
+            Customer customer,
+            Dictionary<string, object> sourceData,
+            string sourceName,
+            string? importBatchId,
+            Guid? importedByUserId)
+        {
+            var externalId = sourceData.GetValueOrDefault("id")?.ToString() ??
+                            sourceData.GetValueOrDefault("external_id")?.ToString() ?? "";
+
+            var existingMarketingData = customer.MarketingDataSources
+                .FirstOrDefault(m => m.Source == sourceName);
+
+            if (existingMarketingData != null)
+            {
+                UpdateMarketingDataFields(existingMarketingData, sourceData);
+                existingMarketingData.LastSyncedAt = DateTime.UtcNow;
+            }
+            else
+            {
+                var newMarketingData = new CustomerMarketingData
+                {
+                    CustomerId = customer.Id,
+                    Source = sourceName,
+                    ExternalId = externalId,
+                    SourcePriority = _sourcePriorities.GetValueOrDefault(sourceName, 10),
+                    ImportBatchId = importBatchId,
+                    ImportedByUserId = importedByUserId,
+                    LastSyncedAt = DateTime.UtcNow,
+                    IsActive = true
+                };
+
+                UpdateMarketingDataFields(newMarketingData, sourceData);
+
+                var currentPrimary = customer.MarketingDataSources.FirstOrDefault(m => m.IsPrimarySource && m.IsActive);
+                if (currentPrimary == null || newMarketingData.SourcePriority > currentPrimary.SourcePriority)
+                {
+                    if (currentPrimary != null)
+                        currentPrimary.IsPrimarySource = false;
+
+                    newMarketingData.IsPrimarySource = true;
+                    customer.PrimaryMarketingSource = sourceName;
+                }
+
+                customer.MarketingDataSources.Add(newMarketingData);
+                _context.CustomerMarketingData.Add(newMarketingData);
+            }
+        }
+
+        private async Task AddOrUpdateSupportDataAsync(
+            Customer customer,
+            Dictionary<string, object> sourceData,
+            string sourceName,
+            string? importBatchId,
+            Guid? importedByUserId)
+        {
+            var externalId = sourceData.GetValueOrDefault("id")?.ToString() ??
+                            sourceData.GetValueOrDefault("external_id")?.ToString() ?? "";
+
+            var existingSupportData = customer.SupportDataSources
+                .FirstOrDefault(s => s.Source == sourceName);
+
+            if (existingSupportData != null)
+            {
+                UpdateSupportDataFields(existingSupportData, sourceData);
+                existingSupportData.LastSyncedAt = DateTime.UtcNow;
+            }
+            else
+            {
+                var newSupportData = new CustomerSupportData
+                {
+                    CustomerId = customer.Id,
+                    Source = sourceName,
+                    ExternalId = externalId,
+                    SourcePriority = _sourcePriorities.GetValueOrDefault(sourceName, 10),
+                    ImportBatchId = importBatchId,
+                    ImportedByUserId = importedByUserId,
+                    LastSyncedAt = DateTime.UtcNow,
+                    IsActive = true
+                };
+
+                UpdateSupportDataFields(newSupportData, sourceData);
+
+                var currentPrimary = customer.SupportDataSources.FirstOrDefault(s => s.IsPrimarySource && s.IsActive);
+                if (currentPrimary == null || newSupportData.SourcePriority > currentPrimary.SourcePriority)
+                {
+                    if (currentPrimary != null)
+                        currentPrimary.IsPrimarySource = false;
+
+                    newSupportData.IsPrimarySource = true;
+                    customer.PrimarySupportSource = sourceName;
+                }
+
+                customer.SupportDataSources.Add(newSupportData);
+                _context.CustomerSupportData.Add(newSupportData);
+            }
+        }
+
+        private async Task AddOrUpdateEngagementDataAsync(
+            Customer customer,
+            Dictionary<string, object> sourceData,
+            string sourceName,
+            string? importBatchId,
+            Guid? importedByUserId)
+        {
+            var externalId = sourceData.GetValueOrDefault("id")?.ToString() ??
+                            sourceData.GetValueOrDefault("external_id")?.ToString() ?? "";
+
+            var existingEngagementData = customer.EngagementDataSources
+                .FirstOrDefault(e => e.Source == sourceName);
+
+            if (existingEngagementData != null)
+            {
+                UpdateEngagementDataFields(existingEngagementData, sourceData);
+                existingEngagementData.LastSyncedAt = DateTime.UtcNow;
+            }
+            else
+            {
+                var newEngagementData = new CustomerEngagementData
+                {
+                    CustomerId = customer.Id,
+                    Source = sourceName,
+                    ExternalId = externalId,
+                    SourcePriority = _sourcePriorities.GetValueOrDefault(sourceName, 10),
+                    ImportBatchId = importBatchId,
+                    ImportedByUserId = importedByUserId,
+                    LastSyncedAt = DateTime.UtcNow,
+                    IsActive = true
+                };
+
+                UpdateEngagementDataFields(newEngagementData, sourceData);
+
+                var currentPrimary = customer.EngagementDataSources.FirstOrDefault(e => e.IsPrimarySource && e.IsActive);
+                if (currentPrimary == null || newEngagementData.SourcePriority > currentPrimary.SourcePriority)
+                {
+                    if (currentPrimary != null)
+                        currentPrimary.IsPrimarySource = false;
+
+                    newEngagementData.IsPrimarySource = true;
+                    customer.PrimaryEngagementSource = sourceName;
+                }
+
+                customer.EngagementDataSources.Add(newEngagementData);
+                _context.CustomerEngagementData.Add(newEngagementData);
+            }
+        }
+
         private async Task UpdateCoreCustomerFieldsWithConflictResolution(
             Customer customer,
             Dictionary<string, object> sourceData,
@@ -438,16 +641,28 @@ namespace Application.Services
             // Only update core fields if this source has higher priority than what we currently trust
             // or if the field is currently empty
 
-            if (ShouldUpdateField(customer.FirstName, sourceData.GetValueOrDefault("first_name")?.ToString(), sourcePriority))
-                customer.FirstName = sourceData.GetValueOrDefault("first_name")?.ToString() ?? customer.FirstName;
+            if (ShouldUpdateField(customer.FirstName, sourceData.GetValueOrDefault("first_name")?.ToString() ??
+                                 sourceData.GetValueOrDefault("firstname")?.ToString(), sourcePriority))
+                customer.FirstName = sourceData.GetValueOrDefault("first_name")?.ToString() ??
+                                   sourceData.GetValueOrDefault("firstname")?.ToString() ?? customer.FirstName;
 
-            if (ShouldUpdateField(customer.LastName, sourceData.GetValueOrDefault("last_name")?.ToString(), sourcePriority))
-                customer.LastName = sourceData.GetValueOrDefault("last_name")?.ToString() ?? customer.LastName;
+            if (ShouldUpdateField(customer.LastName, sourceData.GetValueOrDefault("last_name")?.ToString() ??
+                                 sourceData.GetValueOrDefault("lastname")?.ToString(), sourcePriority))
+                customer.LastName = sourceData.GetValueOrDefault("last_name")?.ToString() ??
+                                  sourceData.GetValueOrDefault("lastname")?.ToString() ?? customer.LastName;
 
             if (ShouldUpdateField(customer.Phone, sourceData.GetValueOrDefault("phone")?.ToString(), sourcePriority))
                 customer.Phone = sourceData.GetValueOrDefault("phone")?.ToString();
 
-            // Continue for other core fields...
+            if (ShouldUpdateField(customer.CompanyName, sourceData.GetValueOrDefault("company_name")?.ToString() ??
+                                 sourceData.GetValueOrDefault("company")?.ToString(), sourcePriority))
+                customer.CompanyName = sourceData.GetValueOrDefault("company_name")?.ToString() ??
+                                     sourceData.GetValueOrDefault("company")?.ToString();
+
+            if (ShouldUpdateField(customer.JobTitle, sourceData.GetValueOrDefault("job_title")?.ToString() ??
+                                 sourceData.GetValueOrDefault("jobtitle")?.ToString(), sourcePriority))
+                customer.JobTitle = sourceData.GetValueOrDefault("job_title")?.ToString() ??
+                                  sourceData.GetValueOrDefault("jobtitle")?.ToString();
 
             customer.LastSyncedAt = DateTime.UtcNow;
         }
@@ -497,34 +712,86 @@ namespace Application.Services
             return "crm";
         }
 
-        // Helper methods for updating specific data types...
+        // Helper methods for updating specific data types
         private void UpdateCrmDataFields(CustomerCrmData crmData, Dictionary<string, object> sourceData)
         {
             if (sourceData.ContainsKey("lead_source"))
                 crmData.LeadSource = sourceData["lead_source"]?.ToString();
-            if (sourceData.ContainsKey("lifecycle_stage"))
-                crmData.LifecycleStage = sourceData["lifecycle_stage"]?.ToString();
+            if (sourceData.ContainsKey("lifecycle_stage") || sourceData.ContainsKey("lifecyclestage"))
+                crmData.LifecycleStage = sourceData["lifecycle_stage"]?.ToString() ?? sourceData["lifecyclestage"]?.ToString();
             if (sourceData.ContainsKey("sales_owner_name"))
                 crmData.SalesOwnerName = sourceData["sales_owner_name"]?.ToString();
             if (sourceData.ContainsKey("deal_count") && int.TryParse(sourceData["deal_count"]?.ToString(), out var dealCount))
                 crmData.DealCount = dealCount;
             if (sourceData.ContainsKey("total_deal_value") && decimal.TryParse(sourceData["total_deal_value"]?.ToString(), out var totalValue))
                 crmData.TotalDealValue = totalValue;
-            // ... other CRM fields
+            if (sourceData.ContainsKey("last_activity_date") && DateTime.TryParse(sourceData["last_activity_date"]?.ToString(), out var lastActivity))
+                crmData.LastActivityDate = lastActivity;
+            if (sourceData.ContainsKey("first_contact_date") && DateTime.TryParse(sourceData["first_contact_date"]?.ToString(), out var firstContact))
+                crmData.FirstContactDate = firstContact;
         }
 
         private void UpdatePaymentDataFields(CustomerPaymentData paymentData, Dictionary<string, object> sourceData)
         {
-            if (sourceData.ContainsKey("subscription_status") && Enum.TryParse<SubscriptionStatus>(sourceData["subscription_status"]?.ToString(), out var subStatus))
+            if (sourceData.ContainsKey("subscription_status") && Enum.TryParse<SubscriptionStatus>(sourceData["subscription_status"]?.ToString(), true, out var subStatus))
                 paymentData.SubscriptionStatus = subStatus;
-            if (sourceData.ContainsKey("plan") && Enum.TryParse<SubscriptionPlan>(sourceData["plan"]?.ToString(), out var plan))
+            if (sourceData.ContainsKey("plan") && Enum.TryParse<SubscriptionPlan>(sourceData["plan"]?.ToString(), true, out var plan))
                 paymentData.Plan = plan;
             if (sourceData.ContainsKey("mrr") && decimal.TryParse(sourceData["mrr"]?.ToString(), out var mrr))
                 paymentData.MonthlyRecurringRevenue = mrr;
-            // ... other payment fields
+            if (sourceData.ContainsKey("monthly_revenue") && decimal.TryParse(sourceData["monthly_revenue"]?.ToString(), out var monthlyRevenue))
+                paymentData.MonthlyRecurringRevenue = monthlyRevenue;
+            if (sourceData.ContainsKey("lifetime_value") && decimal.TryParse(sourceData["lifetime_value"]?.ToString(), out var ltv))
+                paymentData.LifetimeValue = ltv;
+            if (sourceData.ContainsKey("subscription_start_date") && DateTime.TryParse(sourceData["subscription_start_date"]?.ToString(), out var subStartDate))
+                paymentData.SubscriptionStartDate = subStartDate;
+            if (sourceData.ContainsKey("payment_status") && Enum.TryParse<PaymentStatus>(sourceData["payment_status"]?.ToString(), true, out var payStatus))
+                paymentData.PaymentStatus = payStatus;
+            if (sourceData.ContainsKey("next_billing_date") && DateTime.TryParse(sourceData["next_billing_date"]?.ToString(), out var nextBilling))
+                paymentData.NextBillingDate = nextBilling;
+            if (sourceData.ContainsKey("payment_failures") && int.TryParse(sourceData["payment_failures"]?.ToString(), out var failures))
+                paymentData.PaymentFailureCount = failures;
         }
 
-        // ... other helper methods for risk calculation, etc.
+        private void UpdateMarketingDataFields(CustomerMarketingData marketingData, Dictionary<string, object> sourceData)
+        {
+            if (sourceData.ContainsKey("is_subscribed") && bool.TryParse(sourceData["is_subscribed"]?.ToString(), out var isSubscribed))
+                marketingData.IsSubscribed = isSubscribed;
+            if (sourceData.ContainsKey("open_rate") && double.TryParse(sourceData["open_rate"]?.ToString(), out var openRate))
+                marketingData.AverageOpenRate = openRate;
+            if (sourceData.ContainsKey("click_rate") && double.TryParse(sourceData["click_rate"]?.ToString(), out var clickRate))
+                marketingData.AverageClickRate = clickRate;
+            if (sourceData.ContainsKey("emails_sent") && int.TryParse(sourceData["emails_sent"]?.ToString(), out var emailsSent))
+                marketingData.TotalEmailsSent = emailsSent;
+            if (sourceData.ContainsKey("campaign_count") && int.TryParse(sourceData["campaign_count"]?.ToString(), out var campaignCount))
+                marketingData.CampaignCount = campaignCount;
+        }
+
+        private void UpdateSupportDataFields(CustomerSupportData supportData, Dictionary<string, object> sourceData)
+        {
+            if (sourceData.ContainsKey("total_tickets") && int.TryParse(sourceData["total_tickets"]?.ToString(), out var totalTickets))
+                supportData.TotalTickets = totalTickets;
+            if (sourceData.ContainsKey("open_tickets") && int.TryParse(sourceData["open_tickets"]?.ToString(), out var openTickets))
+                supportData.OpenTickets = openTickets;
+            if (sourceData.ContainsKey("csat_score") && double.TryParse(sourceData["csat_score"]?.ToString(), out var csatScore))
+                supportData.CustomerSatisfactionScore = csatScore;
+            if (sourceData.ContainsKey("avg_resolution_time") && double.TryParse(sourceData["avg_resolution_time"]?.ToString(), out var avgResTime))
+                supportData.AverageResolutionTime = avgResTime;
+        }
+
+        private void UpdateEngagementDataFields(CustomerEngagementData engagementData, Dictionary<string, object> sourceData)
+        {
+            if (sourceData.ContainsKey("last_login") && DateTime.TryParse(sourceData["last_login"]?.ToString(), out var lastLogin))
+                engagementData.LastLoginDate = lastLogin;
+            if (sourceData.ContainsKey("weekly_logins") && int.TryParse(sourceData["weekly_logins"]?.ToString(), out var weeklyLogins))
+                engagementData.WeeklyLoginFrequency = weeklyLogins;
+            if (sourceData.ContainsKey("feature_usage") && decimal.TryParse(sourceData["feature_usage"]?.ToString(), out var featureUsage))
+                engagementData.FeatureUsagePercentage = featureUsage;
+            if (sourceData.ContainsKey("session_count") && int.TryParse(sourceData["session_count"]?.ToString(), out var sessionCount))
+                engagementData.TotalSessions = sessionCount;
+            if (sourceData.ContainsKey("avg_session_duration") && double.TryParse(sourceData["avg_session_duration"]?.ToString(), out var avgSessionDuration))
+                engagementData.AverageSessionDuration = avgSessionDuration;
+        }
 
         private async Task<CustomerResponse> MapToUnifiedResponse(Customer customer)
         {
@@ -546,29 +813,10 @@ namespace Application.Services
                 LastSyncedAt = customer.LastSyncedAt
             };
 
-            // Get primary source data
-            var primaryCrm = customer.GetPrimaryCrmData();
-            if (primaryCrm != null)
-            {
-                response.PrimaryCrmInfo = new CustomerCrmInfo
-                {
-                    Source = primaryCrm.Source,
-                    IsPrimarySource = true,
-                    ImportBatchId = primaryCrm.ImportBatchId,
-                    LeadSource = primaryCrm.LeadSource,
-                    LifecycleStage = primaryCrm.LifecycleStage,
-                    SalesOwnerName = primaryCrm.SalesOwnerName,
-                    LastActivityDate = primaryCrm.LastActivityDate,
-                    DealCount = primaryCrm.DealCount,
-                    TotalDealValue = primaryCrm.TotalDealValue,
-                    LastSyncedAt = primaryCrm.LastSyncedAt,
-                    IsActive = primaryCrm.IsActive
-                };
-            }
-
-            // Get all sources for advanced users
-            response.AllCrmSources = await GetAllCrmSourcesAsync(customer.Id);
-            response.AllPaymentSources = await GetAllPaymentSourcesAsync(customer.Id);
+            // Get all sources for comprehensive view
+            response.CrmInfo = await GetAllCrmSourcesAsync(customer.Id);
+            response.PaymentInfo = await GetAllPaymentSourcesAsync(customer.Id);
+            // Add other source types as needed
 
             return response;
         }
@@ -591,8 +839,128 @@ namespace Application.Services
             };
         }
 
-        // Placeholder methods for risk calculation
-        private decimal CalculatePaymentRisk(CustomerPaymentData paymentData) => 0.5m; // Implement actual logic
-        private decimal CalculateEngagementRisk(CustomerEngagementData engagementData) => 0.3m; // Implement actual logic
+        // Risk calculation methods
+        private decimal CalculatePaymentRisk(CustomerPaymentData paymentData)
+        {
+            decimal risk = 0;
+
+            // Payment status risk
+            risk += paymentData.PaymentStatus switch
+            {
+                PaymentStatus.Failed => 0.8m,
+                PaymentStatus.PastDue => 0.6m,
+                PaymentStatus.Cancelled => 1.0m,
+                _ => 0.1m
+            };
+
+            // Subscription status risk
+            risk += paymentData.SubscriptionStatus switch
+            {
+                SubscriptionStatus.Cancelled => 1.0m,
+                SubscriptionStatus.Expired => 0.9m,
+                SubscriptionStatus.PastDue => 0.7m,
+                SubscriptionStatus.Trial => 0.3m,
+                _ => 0.1m
+            };
+
+            // Payment failure count
+            if (paymentData.PaymentFailureCount > 0)
+                risk += Math.Min(0.3m, paymentData.PaymentFailureCount * 0.1m);
+
+            // Recent payment failure
+            if (paymentData.LastPaymentFailureDate.HasValue &&
+                paymentData.LastPaymentFailureDate.Value > DateTime.UtcNow.AddDays(-30))
+                risk += 0.2m;
+
+            return Math.Min(1.0m, risk);
+        }
+
+        private decimal CalculateEngagementRisk(CustomerEngagementData engagementData)
+        {
+            decimal risk = 0;
+
+            // Last login risk
+            if (engagementData.LastLoginDate.HasValue)
+            {
+                var daysSinceLogin = (DateTime.UtcNow - engagementData.LastLoginDate.Value).TotalDays;
+                risk += daysSinceLogin switch
+                {
+                    > 30 => 0.8m,
+                    > 14 => 0.5m,
+                    > 7 => 0.3m,
+                    _ => 0.1m
+                };
+            }
+            else
+            {
+                risk += 0.9m; // No login data is high risk
+            }
+
+            // Login frequency risk
+            risk += engagementData.WeeklyLoginFrequency switch
+            {
+                0 => 0.8m,
+                1 => 0.4m,
+                2 => 0.2m,
+                _ => 0.0m
+            };
+
+            // Feature usage risk
+            risk += engagementData.FeatureUsagePercentage switch
+            {
+                < 10 => 0.7m,
+                < 25 => 0.4m,
+                < 50 => 0.2m,
+                _ => 0.0m
+            };
+
+            return Math.Min(1.0m, risk / 3); // Average the risk factors
+        }
+
+        private decimal CalculateSupportRisk(CustomerSupportData supportData)
+        {
+            decimal risk = 0;
+
+            // High number of open tickets
+            if (supportData.OpenTickets > 3)
+                risk += 0.5m;
+            else if (supportData.OpenTickets > 1)
+                risk += 0.2m;
+
+            // Low satisfaction score
+            if (supportData.CustomerSatisfactionScore < 3.0)
+                risk += 0.6m;
+            else if (supportData.CustomerSatisfactionScore < 4.0)
+                risk += 0.3m;
+
+            // High number of urgent tickets
+            if (supportData.UrgentTickets > 0)
+                risk += 0.4m;
+
+            return Math.Min(1.0m, risk);
+        }
+
+        private decimal CalculateMarketingRisk(CustomerMarketingData marketingData)
+        {
+            decimal risk = 0;
+
+            // Not subscribed to marketing
+            if (!marketingData.IsSubscribed)
+                risk += 0.4m;
+
+            // Low engagement rates
+            if (marketingData.AverageOpenRate < 0.1) // Less than 10%
+                risk += 0.3m;
+
+            if (marketingData.AverageClickRate < 0.02) // Less than 2%
+                risk += 0.2m;
+
+            // No recent engagement
+            if (marketingData.LastCampaignEngagement.HasValue &&
+                marketingData.LastCampaignEngagement.Value < DateTime.UtcNow.AddDays(-60))
+                risk += 0.3m;
+
+            return Math.Min(1.0m, risk);
+        }
     }
 }

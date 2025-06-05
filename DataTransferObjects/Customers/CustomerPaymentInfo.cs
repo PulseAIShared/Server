@@ -18,8 +18,12 @@ namespace DataTransferObjects.Customers
         public decimal MonthlyRecurringRevenue { get; set; }
         public decimal LifetimeValue { get; set; }
         public DateTime? SubscriptionStartDate { get; set; }
+
+        public DateTime? SubscriptionEndDate { get; set; }
         public PaymentStatus PaymentStatus { get; set; }
         public DateTime? NextBillingDate { get; set; }
+
+        public DateTime? LastPaymentDate { get; set; }
         public int PaymentFailureCount { get; set; }
 
         public DateTime LastSyncedAt { get; set; }

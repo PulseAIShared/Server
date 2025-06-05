@@ -20,6 +20,11 @@ public interface IApplicationDbContext
     DbSet<CustomerActivity> CustomerActivities { get; }
     DbSet<ChurnPrediction> ChurnPredictions { get; }
     DbSet<CustomerSegment> CustomerSegments { get; }
+    DbSet<CustomerCrmData> CustomerCrmData { get; set; }
+     DbSet<CustomerPaymentData> CustomerPaymentData { get; set; }
+     DbSet<CustomerMarketingData> CustomerMarketingData { get; set; }
+     DbSet<CustomerSupportData> CustomerSupportData { get; set; }
+     DbSet<CustomerEngagementData> CustomerEngagementData { get; set; }
     DbSet<Company> Companies { get; }
     DbSet<CompanyInvitation> CompanyInvitations { get; }
     DbSet<Integration> Integrations { get; }

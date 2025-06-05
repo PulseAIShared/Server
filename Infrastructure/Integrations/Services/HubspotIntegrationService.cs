@@ -2,7 +2,6 @@
 using Domain.Customers;
 using Domain.Integration;
 using Infrastructure.Integrations.Models;
-using Microsoft.AspNetCore.Authentication.OAuth;
 using Microsoft.Extensions.Logging;
 using SharedKernel.Enums;
 using System.Text.Json;
@@ -12,7 +11,6 @@ using Microsoft.EntityFrameworkCore;
 using Infrastructure.Integrations.Services.Interfaces;
 using Application.Services;
 
-
 namespace Infrastructure.Integrations.Services;
 
 public class HubSpotIntegrationService : IIntegrationService
@@ -20,17 +18,18 @@ public class HubSpotIntegrationService : IIntegrationService
     private readonly HttpClient _httpClient;
     private readonly ILogger<HubSpotIntegrationService> _logger;
     private readonly IApplicationDbContext _context;
-    private readonly ICustomerAggregationService _customerService;
+    private readonly ICustomerAggregationService _customerAggregationService;
+
     public HubSpotIntegrationService(
         HttpClient httpClient,
         ILogger<HubSpotIntegrationService> logger,
         IApplicationDbContext context,
-         ICustomerAggregationService customerService)
+        ICustomerAggregationService customerAggregationService)
     {
         _httpClient = httpClient;
         _logger = logger;
         _context = context;
-        _customerService = customerService;
+        _customerAggregationService = customerAggregationService;
     }
 
     public IntegrationType Type => IntegrationType.HubSpot;
@@ -90,29 +89,74 @@ public class HubSpotIntegrationService : IIntegrationService
             {
                 try
                 {
-                    var customer = MapHubSpotContactToCustomer(contact, integration);
+                    var sourceData = MapHubSpotContactToSourceData(contact);
+                    var email = sourceData.GetValueOrDefault("email")?.ToString();
 
+                    if (string.IsNullOrEmpty(email))
+                    {
+                        result.ErrorRecords++;
+                        result.Errors.Add(new SyncError
+                        {
+                            RecordId = contact.Id,
+                            Message = "Contact has no email address"
+                        });
+                        continue;
+                    }
+
+                    // Find existing customer by email
                     var existingCustomer = existingCustomers.FirstOrDefault(c =>
-                        c.Email.Equals(customer.Email, StringComparison.OrdinalIgnoreCase) ||
-                        c.ExternalId == customer.ExternalId);
+                        c.Email.Equals(email, StringComparison.OrdinalIgnoreCase));
 
                     if (existingCustomer != null)
                     {
-                        // Update existing customer
-                        if (UpdateCustomerFromHubSpot(existingCustomer, customer))
-                        {
-                            result.UpdatedRecords++;
-                        }
+                        // Update existing customer using aggregation service
+                        await _customerAggregationService.AddOrUpdateCustomerDataAsync(
+                            existingCustomer.Id,
+                            sourceData,
+                            "hubspot",
+                            null, // No import batch for integrations
+                            null  // No user for automated sync
+                        );
+                        result.UpdatedRecords++;
                     }
                     else
                     {
                         // Create new customer
-                        customer.CompanyId = integration.CompanyId;
-                        customer. = "hubspot";
-                        customer.LastSyncedAt = DateTime.UtcNow;
+                        var newCustomer = new Customer
+                        {
+                            CompanyId = integration.CompanyId,
+                            Email = email,
+                            FirstName = sourceData.GetValueOrDefault("firstname")?.ToString() ?? "",
+                            LastName = sourceData.GetValueOrDefault("lastname")?.ToString() ?? "",
+                            Phone = sourceData.GetValueOrDefault("phone")?.ToString(),
+                            CompanyName = sourceData.GetValueOrDefault("company")?.ToString(),
+                            JobTitle = sourceData.GetValueOrDefault("jobtitle")?.ToString(),
+                            LastSyncedAt = DateTime.UtcNow,
+                            ChurnRiskLevel = ChurnRiskLevel.Low,
+                            ChurnRiskScore = 0
+                        };
 
-                        _context.Customers.Add(customer);
+                        // Set defaults for required fields if not provided
+                        if (string.IsNullOrEmpty(newCustomer.FirstName) && string.IsNullOrEmpty(newCustomer.LastName))
+                        {
+                            newCustomer.FirstName = "Unknown";
+                            newCustomer.LastName = "Contact";
+                        }
+
+                        _context.Customers.Add(newCustomer);
+                        await _context.SaveChangesAsync(); // Save to get the ID
+
+                        // Now add the HubSpot-specific data using aggregation service
+                        await _customerAggregationService.AddOrUpdateCustomerDataAsync(
+                            newCustomer.Id,
+                            sourceData,
+                            "hubspot",
+                            null,
+                            null
+                        );
+
                         result.NewRecords++;
+                        existingCustomers.Add(newCustomer); // Add to local cache
                     }
 
                     result.ProcessedRecords++;
@@ -129,12 +173,11 @@ public class HubSpotIntegrationService : IIntegrationService
                 }
             }
 
-            await _context.SaveChangesAsync();
-
             // Update integration sync status
             integration.LastSyncedAt = DateTime.UtcNow;
             integration.SyncedRecordCount = result.ProcessedRecords;
             integration.Status = IntegrationStatus.Connected;
+            integration.LastSyncError = null;
 
             await _context.SaveChangesAsync();
 
@@ -168,7 +211,7 @@ public class HubSpotIntegrationService : IIntegrationService
         {
             "email", "firstname", "lastname", "phone", "company", "jobtitle",
             "lifecyclestage", "createdate", "lastmodifieddate", "last_activity_date",
-            "hs_lead_status", "hubspot_owner_id"
+            "hs_lead_status", "hubspot_owner_id", "lead_source"
         };
 
         var url = $"{baseUrl}?properties={string.Join(",", properties)}&limit=100";
@@ -208,102 +251,51 @@ public class HubSpotIntegrationService : IIntegrationService
 
     private async Task<List<Customer>> GetExistingCustomersAsync(Guid companyId, List<HubSpotContact> contacts)
     {
-        var emails = contacts.Select(c => c.Properties.Email.ToLower()).Where(e => !string.IsNullOrEmpty(e)).ToList();
-        var externalIds = contacts.Select(c => c.Id).ToList();
+        var emails = contacts
+            .Select(c => c.Properties.Email?.ToLower())
+            .Where(e => !string.IsNullOrEmpty(e))
+            .ToList();
+
+        if (!emails.Any())
+            return new List<Customer>();
 
         return await _context.Customers
-            .Where(c => c.CompanyId == companyId &&
-                       (emails.Contains(c.Email.ToLower()) || externalIds.Contains(c.ExternalId)))
+            .Where(c => c.CompanyId == companyId && emails.Contains(c.Email.ToLower()))
             .ToListAsync();
     }
 
-    private Customer MapHubSpotContactToCustomer(HubSpotContact contact, Integration integration)
+    private Dictionary<string, object> MapHubSpotContactToSourceData(HubSpotContact contact)
     {
-        var customer = new Customer
+        var sourceData = new Dictionary<string, object>
         {
-            ExternalId = contact.Id,
-            Source = "hubspot",
-            FirstName = contact.Properties.Firstname ?? "",
-            LastName = contact.Properties.Lastname ?? "",
-            Email = contact.Properties.Email ?? "",
-            Phone = contact.Properties.Phone,
-            CompanyName = contact.Properties.Company,
-            JobTitle = contact.Properties.Jobtitle,
-            LastSyncedAt = DateTime.UtcNow,
-
-            // Map HubSpot lifecycle stage to our subscription status
-            SubscriptionStatus = MapLifecycleStageToSubscriptionStatus(contact.Properties.Lifecyclestage),
-
-            // Set defaults
-            Plan = SubscriptionPlan.Trial,
-            PaymentStatus = PaymentStatus.Active,
-            ChurnRiskLevel = ChurnRiskLevel.Low,
-            ChurnRiskScore = 0
+            ["id"] = contact.Id,
+            ["email"] = contact.Properties.Email ?? "",
+            ["firstname"] = contact.Properties.Firstname ?? "",
+            ["lastname"] = contact.Properties.Lastname ?? "",
+            ["phone"] = contact.Properties.Phone ?? "",
+            ["company"] = contact.Properties.Company ?? "",
+            ["jobtitle"] = contact.Properties.Jobtitle ?? "",
+            ["lifecyclestage"] = contact.Properties.Lifecyclestage ?? "",
+            ["lead_source"] = contact.Properties.Hs_lead_status ?? "",
+            ["sales_owner_name"] = "", // HubSpot doesn't provide owner name directly
         };
 
-        // Parse dates
+        // Parse dates safely
         if (DateTime.TryParse(contact.Properties.Lastmodifieddate?.ToString(), out var lastModified))
         {
-            customer.LastLoginDate = lastModified;
+            sourceData["last_activity_date"] = lastModified;
         }
 
-        return customer;
-    }
-
-    private bool UpdateCustomerFromHubSpot(Customer existing, Customer updated)
-    {
-        bool hasChanges = false;
-
-        if (existing.FirstName != updated.FirstName)
+        if (DateTime.TryParse(contact.CreatedAt.ToString(), out var createdAt))
         {
-            existing.FirstName = updated.FirstName;
-            hasChanges = true;
+            sourceData["first_contact_date"] = createdAt;
         }
 
-        if (existing.LastName != updated.LastName)
-        {
-            existing.LastName = updated.LastName;
-            hasChanges = true;
-        }
+        // Set some default CRM values
+        sourceData["deal_count"] = 0;
+        sourceData["total_deal_value"] = 0;
 
-        if (existing.Phone != updated.Phone)
-        {
-            existing.Phone = updated.Phone;
-            hasChanges = true;
-        }
-
-        if (existing.CompanyName != updated.CompanyName)
-        {
-            existing.CompanyName = updated.CompanyName;
-            hasChanges = true;
-        }
-
-        if (existing.JobTitle != updated.JobTitle)
-        {
-            existing.JobTitle = updated.JobTitle;
-            hasChanges = true;
-        }
-
-        if (hasChanges)
-        {
-            existing.LastSyncedAt = DateTime.UtcNow;
-        }
-
-        return hasChanges;
-    }
-
-    private SubscriptionStatus MapLifecycleStageToSubscriptionStatus(string? lifecycleStage)
-    {
-        return lifecycleStage?.ToLower() switch
-        {
-            "lead" => SubscriptionStatus.Trial,
-            "marketingqualifiedlead" => SubscriptionStatus.Trial,
-            "salesqualifiedlead" => SubscriptionStatus.Trial,
-            "opportunity" => SubscriptionStatus.Trial,
-            "customer" => SubscriptionStatus.Active,
-            "evangelist" => SubscriptionStatus.Active,
-            _ => SubscriptionStatus.Trial
-        };
+        return sourceData;
     }
 
     private string? GetAccessToken(Integration integration)
@@ -327,13 +319,13 @@ public class HubSpotIntegrationService : IIntegrationService
     {
         // HubSpot OAuth token endpoint expects form-encoded data, not JSON
         var tokenRequest = new List<KeyValuePair<string, string>>
-    {
-        new("grant_type", "authorization_code"),
-        new("client_id", clientId),
-        new("client_secret", clientSecret),
-        new("redirect_uri", redirectUri),
-        new("code", code)
-    };
+        {
+            new("grant_type", "authorization_code"),
+            new("client_id", clientId),
+            new("client_secret", clientSecret),
+            new("redirect_uri", redirectUri),
+            new("code", code)
+        };
 
         var content = new FormUrlEncodedContent(tokenRequest);
 

@@ -8,12 +8,10 @@ namespace DataTransferObjects.Customers
 {
     public sealed class CustomerDetailResponse : CustomerResponse
     {
-        // Additional details for single customer view
+
         public int? Age { get; set; }
         public string? Gender { get; set; }
         public string? TimeZone { get; set; }
-        public DateTime? LastPaymentFailureDate { get; set; }
-        public string? SyncVersion { get; set; }
 
         // Recent activities (last 10)
         public List<CustomerActivityResponse> RecentActivities { get; set; } = new();
