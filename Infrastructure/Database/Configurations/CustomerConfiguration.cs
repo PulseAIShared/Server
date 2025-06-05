@@ -3,6 +3,7 @@ using Domain.Segments;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using Microsoft.EntityFrameworkCore;
 using SharedKernel.Enums;
+using Domain.Campaigns;
 namespace Infrastructure.Database.Configurations;
 
     public class CustomerConfiguration : IEntityTypeConfiguration<Customer>
@@ -104,6 +105,19 @@ namespace Infrastructure.Database.Configurations;
             .WithOne(ed => ed.Customer)
             .HasForeignKey(ed => ed.CustomerId)
             .OnDelete(DeleteBehavior.Cascade);
+
+        builder.HasMany(c => c.Campaigns)
+       .WithMany(camp => camp.Customers)
+       .UsingEntity<Dictionary<string, object>>(
+           "customer_campaigns",
+           j => j.HasOne<Campaign>().WithMany().HasForeignKey("campaign_id"),
+           j => j.HasOne<Customer>().WithMany().HasForeignKey("customer_id"),
+           j =>
+           {
+               j.HasKey("customer_id", "campaign_id");
+               j.HasIndex("customer_id").HasDatabaseName("ix_customer_campaigns_customer_id");
+               j.HasIndex("campaign_id").HasDatabaseName("ix_customer_campaigns_campaign_id");
+           });
 
         builder.ToTable("customers");
     }

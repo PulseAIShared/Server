@@ -8,6 +8,8 @@ using SharedKernel.Enums;
 using Microsoft.Extensions.DependencyInjection;
 using Hangfire;
 using System.Linq;
+using System.Text.RegularExpressions;
+using Infrastructure.Integrations.Models;
 
 namespace Infrastructure.Services;
 
@@ -17,7 +19,6 @@ public class CustomerImportService : ICustomerImportService
     private readonly IFileStorageService _fileStorageService;
     private readonly IBackgroundJobClient _backgroundJobClient;
     private readonly ILogger<CustomerImportService> _logger;
-    private readonly ICustomerAggregationService _customerAggregationService;
 
     private const int BATCH_SIZE = 100;
     private const int PROGRESS_UPDATE_INTERVAL = 50;
@@ -26,14 +27,12 @@ public class CustomerImportService : ICustomerImportService
         IServiceProvider serviceProvider,
         IFileStorageService fileStorageService,
         IBackgroundJobClient backgroundJobClient,
-        ILogger<CustomerImportService> logger,
-        ICustomerAggregationService customerAggregationService)
+        ILogger<CustomerImportService> logger)
     {
         _serviceProvider = serviceProvider;
         _fileStorageService = fileStorageService;
         _backgroundJobClient = backgroundJobClient;
         _logger = logger;
-        _customerAggregationService = customerAggregationService;
     }
 
     public async Task ValidateImportFileAsync(Guid jobId, bool skipDuplicates)
@@ -132,6 +131,7 @@ public class CustomerImportService : ICustomerImportService
     {
         using var scope = _serviceProvider.CreateScope();
         var context = scope.ServiceProvider.GetRequiredService<IApplicationDbContext>();
+        var customerAggregationService = scope.ServiceProvider.GetRequiredService<ICustomerAggregationService>();
 
         var job = await context.ImportJobs.FindAsync(jobId);
         if (job == null)
@@ -183,7 +183,7 @@ public class CustomerImportService : ICustomerImportService
             for (int i = 0; i < customers.Count; i += BATCH_SIZE)
             {
                 var batch = customers.Skip(i).Take(BATCH_SIZE).ToList();
-                await ProcessBatchWithDuplicateHandling(batch, job, result, existingCustomers, i, context, skipDuplicates);
+                await ProcessBatchWithDuplicateHandling(batch, job, result, existingCustomers, i, context, skipDuplicates, customerAggregationService);
 
                 // Update progress periodically
                 if (i % PROGRESS_UPDATE_INTERVAL == 0 || i + BATCH_SIZE >= customers.Count)
@@ -424,7 +424,8 @@ public class CustomerImportService : ICustomerImportService
         Dictionary<string, Customer> existingCustomers,
         int batchStartIndex,
         IApplicationDbContext context,
-        bool skipDuplicates)
+        bool skipDuplicates,
+        ICustomerAggregationService customerAggregationService)
     {
         foreach (var (importData, index) in batch.Select((c, i) => (c, i)))
         {
@@ -449,7 +450,7 @@ public class CustomerImportService : ICustomerImportService
 
                         try
                         {
-                            await _customerAggregationService.AddOrUpdateCustomerDataAsync(
+                            await customerAggregationService.AddOrUpdateCustomerDataAsync(
                                 existingCustomer.Id,
                                 sourceData,
                                 job.ImportSource ?? "manual_import",
@@ -491,7 +492,7 @@ public class CustomerImportService : ICustomerImportService
 
                     try
                     {
-                        await _customerAggregationService.AddOrUpdateCustomerDataAsync(
+                        await customerAggregationService.AddOrUpdateCustomerDataAsync(
                             newCustomer.Id,
                             sourceData,
                             job.ImportSource ?? "manual_import",
@@ -623,6 +624,37 @@ public class CustomerImportService : ICustomerImportService
             sourceData["external_id"] = importData.ExternalId;
 
         return sourceData;
+    }
+
+    private ImportSummary CalculateInsights(List<Customer> customers)
+    {
+        if (!customers.Any())
+            return ImportSummary.Empty;
+
+        var paymentCustomers = customers.Where(c => c.PaymentDataSources.Any()).ToList();
+        var averageRevenue = paymentCustomers.Any() ? paymentCustomers.Average(c => c.GetPrimaryPaymentData()?.MonthlyRecurringRevenue ?? 0) : 0;
+
+        var customersWithSubscription = paymentCustomers.Where(c => c.GetPrimaryPaymentData()?.SubscriptionStartDate.HasValue == true).ToList();
+        var averageTenure = customersWithSubscription.Any()
+            ? customersWithSubscription.Average(c => (DateTime.UtcNow - (c.GetPrimaryPaymentData()?.SubscriptionStartDate ?? DateTime.UtcNow)).TotalDays / 30.0)
+            : 0;
+
+        var highRiskCustomers = customers.Count(c => c.ChurnRiskLevel >= ChurnRiskLevel.High);
+
+        return new ImportSummary
+        {
+            AverageRevenue = averageRevenue,
+            AverageTenureMonths = averageTenure,
+            NewCustomers = customers.Count,
+            HighRiskCustomers = highRiskCustomers,
+            AdditionalMetrics = new Dictionary<string, object>
+            {
+                ["total_imported"] = customers.Count,
+                ["with_payment_data"] = paymentCustomers.Count,
+                ["with_engagement_data"] = customers.Count(c => c.EngagementDataSources.Any()),
+                ["average_churn_score"] = customers.Any() ? customers.Average(c => c.ChurnRiskScore) : 0
+            }
+        };
     }
 
     // Updated CSV parsing to use new DTO
@@ -916,8 +948,9 @@ public class CustomerImportService : ICustomerImportService
         return errors;
     }
 
-
-
-
+    private static bool IsValidEmail(string email)
+    {
+        var emailRegex = new Regex(@"^[^@\s]+@[^@\s]+\.[^@\s]+$", RegexOptions.IgnoreCase);
+        return emailRegex.IsMatch(email);
+    }
 }
-    

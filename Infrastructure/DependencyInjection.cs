@@ -54,14 +54,9 @@ public static class DependencyInjection
         {
             services.AddScoped<IFileStorageService, LocalFileStorageService>();
         }
-
+        services.AddScoped<ICustomerAggregationService, CustomerAggregationService>();
         // Import service
-        services.AddScoped<ICustomerImportService>(provider =>
-       new CustomerImportService(
-           provider,
-           provider.GetRequiredService<IFileStorageService>(),
-           provider.GetRequiredService<IBackgroundJobClient>(), 
-           provider.GetRequiredService<ILogger<CustomerImportService>>()));
+        services.AddScoped<ICustomerImportService, CustomerImportService>();
 
         services.AddScoped<IImportBackgroundService, ImportBackgroundService>();
         // Notification service

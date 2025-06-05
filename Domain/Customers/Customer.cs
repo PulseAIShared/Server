@@ -54,7 +54,7 @@ public sealed class Customer : Entity
     public Company Company { get; set; } = null!;
     public ICollection<CustomerActivity> Activities { get; set; } = new List<CustomerActivity>();
     public ICollection<ChurnPrediction> ChurnPredictions { get; set; } = new List<ChurnPrediction>();
-
+    public ICollection<Campaign> Campaigns { get; set; } = new List<Campaign>();
     // Multiple sources per data type
     public ICollection<CustomerCrmData> CrmDataSources { get; set; } = new List<CustomerCrmData>();
     public ICollection<CustomerPaymentData> PaymentDataSources { get; set; } = new List<CustomerPaymentData>();

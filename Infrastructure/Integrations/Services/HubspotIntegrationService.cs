@@ -10,6 +10,7 @@ using DataTransferObjects.Integrations;
 using Microsoft.EntityFrameworkCore;
 using Infrastructure.Integrations.Services.Interfaces;
 using Application.Services;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace Infrastructure.Integrations.Services;
 
@@ -17,19 +18,16 @@ public class HubSpotIntegrationService : IIntegrationService
 {
     private readonly HttpClient _httpClient;
     private readonly ILogger<HubSpotIntegrationService> _logger;
-    private readonly IApplicationDbContext _context;
-    private readonly ICustomerAggregationService _customerAggregationService;
+    private readonly IServiceProvider _serviceProvider; // Changed to use service provider
 
     public HubSpotIntegrationService(
         HttpClient httpClient,
         ILogger<HubSpotIntegrationService> logger,
-        IApplicationDbContext context,
-        ICustomerAggregationService customerAggregationService)
+        IServiceProvider serviceProvider)
     {
         _httpClient = httpClient;
         _logger = logger;
-        _context = context;
-        _customerAggregationService = customerAggregationService;
+        _serviceProvider = serviceProvider;
     }
 
     public IntegrationType Type => IntegrationType.HubSpot;
@@ -68,6 +66,11 @@ public class HubSpotIntegrationService : IIntegrationService
             Errors = new List<SyncError>()
         };
 
+        // Use scoped services
+        using var scope = _serviceProvider.CreateScope();
+        var context = scope.ServiceProvider.GetRequiredService<IApplicationDbContext>();
+        var customerAggregationService = scope.ServiceProvider.GetRequiredService<ICustomerAggregationService>();
+
         try
         {
             var accessToken = GetAccessToken(integration);
@@ -83,7 +86,7 @@ public class HubSpotIntegrationService : IIntegrationService
             var contacts = await FetchAllContactsAsync(integration, options);
             result.TotalRecords = contacts.Count;
 
-            var existingCustomers = await GetExistingCustomersAsync(integration.CompanyId, contacts);
+            var existingCustomers = await GetExistingCustomersAsync(integration.CompanyId, contacts, context);
 
             foreach (var contact in contacts)
             {
@@ -110,7 +113,7 @@ public class HubSpotIntegrationService : IIntegrationService
                     if (existingCustomer != null)
                     {
                         // Update existing customer using aggregation service
-                        await _customerAggregationService.AddOrUpdateCustomerDataAsync(
+                        await customerAggregationService.AddOrUpdateCustomerDataAsync(
                             existingCustomer.Id,
                             sourceData,
                             "hubspot",
@@ -143,11 +146,11 @@ public class HubSpotIntegrationService : IIntegrationService
                             newCustomer.LastName = "Contact";
                         }
 
-                        _context.Customers.Add(newCustomer);
-                        await _context.SaveChangesAsync(); // Save to get the ID
+                        context.Customers.Add(newCustomer);
+                        await context.SaveChangesAsync(); // Save to get the ID
 
                         // Now add the HubSpot-specific data using aggregation service
-                        await _customerAggregationService.AddOrUpdateCustomerDataAsync(
+                        await customerAggregationService.AddOrUpdateCustomerDataAsync(
                             newCustomer.Id,
                             sourceData,
                             "hubspot",
@@ -179,7 +182,7 @@ public class HubSpotIntegrationService : IIntegrationService
             integration.Status = IntegrationStatus.Connected;
             integration.LastSyncError = null;
 
-            await _context.SaveChangesAsync();
+            await context.SaveChangesAsync();
 
             result.EndTime = DateTime.UtcNow;
             _logger.LogInformation("HubSpot sync completed for integration {IntegrationId}. " +
@@ -195,7 +198,11 @@ public class HubSpotIntegrationService : IIntegrationService
 
             integration.Status = IntegrationStatus.Error;
             integration.LastSyncError = ex.Message;
-            await _context.SaveChangesAsync();
+
+            using var scope2 = _serviceProvider.CreateScope();
+            var context2 = scope2.ServiceProvider.GetRequiredService<IApplicationDbContext>();
+            context2.Integrations.Update(integration);
+            await context2.SaveChangesAsync();
 
             return result;
         }
@@ -249,7 +256,7 @@ public class HubSpotIntegrationService : IIntegrationService
         return allContacts;
     }
 
-    private async Task<List<Customer>> GetExistingCustomersAsync(Guid companyId, List<HubSpotContact> contacts)
+    private async Task<List<Customer>> GetExistingCustomersAsync(Guid companyId, List<HubSpotContact> contacts, IApplicationDbContext context)
     {
         var emails = contacts
             .Select(c => c.Properties.Email?.ToLower())
@@ -259,7 +266,7 @@ public class HubSpotIntegrationService : IIntegrationService
         if (!emails.Any())
             return new List<Customer>();
 
-        return await _context.Customers
+        return await context.Customers
             .Where(c => c.CompanyId == companyId && emails.Contains(c.Email.ToLower()))
             .ToListAsync();
     }

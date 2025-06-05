@@ -13,7 +13,6 @@ namespace DataTransferObjects.Customers
         public string? Gender { get; set; }
         public string? TimeZone { get; set; }
 
-        // Recent activities (last 10)
         public List<CustomerActivityResponse> RecentActivities { get; set; } = new();
 
         // Churn prediction history (last 5)

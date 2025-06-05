@@ -47,36 +47,17 @@ namespace Application.Customers.Queries
                 Phone = customer.Phone,
                 CompanyName = customer.CompanyName,
                 JobTitle = customer.JobTitle,
-                SubscriptionStatus = customer.SubscriptionStatus,
-                Plan = customer.Plan,
-                MonthlyRecurringRevenue = customer.MonthlyRecurringRevenue,
-                LifetimeValue = customer.LifetimeValue,
-                SubscriptionStartDate = customer.SubscriptionStartDate,
-                SubscriptionEndDate = customer.SubscriptionEndDate,
-                LastLoginDate = customer.LastLoginDate,
-                WeeklyLoginFrequency = customer.WeeklyLoginFrequency,
-                FeatureUsagePercentage = customer.FeatureUsagePercentage,
-                SupportTicketCount = customer.SupportTicketCount,
                 ChurnRiskScore = customer.ChurnRiskScore,
                 ChurnRiskLevel = customer.ChurnRiskLevel,
                 ChurnPredictionDate = customer.ChurnPredictionDate,
-                PaymentStatus = customer.PaymentStatus,
-                LastPaymentDate = customer.LastPaymentDate,
-                NextBillingDate = customer.NextBillingDate,
-                PaymentFailureCount = customer.PaymentFailureCount,
                 Location = customer.Location,
                 Country = customer.Country,
-                Source = customer.Source,
                 LastSyncedAt = customer.LastSyncedAt,
                 DateCreated = customer.DateCreated,
-
                 // Additional detail fields
                 Age = customer.Age,
                 Gender = customer.Gender,
                 TimeZone = customer.TimeZone,
-                LastPaymentFailureDate = customer.LastPaymentFailureDate,
-                SyncVersion = customer.SyncVersion,
-
                 // Recent activities
                 RecentActivities = customer.Activities.Select(a => new CustomerActivityResponse
                 {
@@ -86,7 +67,6 @@ namespace Application.Customers.Queries
                     Metadata = a.Metadata,
                     ActivityDate = a.ActivityDate
                 }).ToList(),
-
                 // Churn prediction history
                 ChurnHistory = customer.ChurnPredictions.Select(cp => new ChurnPredictionResponse
                 {
