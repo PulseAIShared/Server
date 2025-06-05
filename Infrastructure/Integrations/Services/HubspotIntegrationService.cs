@@ -10,6 +10,7 @@ using System;
 using DataTransferObjects.Integrations;
 using Microsoft.EntityFrameworkCore;
 using Infrastructure.Integrations.Services.Interfaces;
+using Application.Services;
 
 
 namespace Infrastructure.Integrations.Services;
@@ -19,15 +20,17 @@ public class HubSpotIntegrationService : IIntegrationService
     private readonly HttpClient _httpClient;
     private readonly ILogger<HubSpotIntegrationService> _logger;
     private readonly IApplicationDbContext _context;
-
+    private readonly ICustomerAggregationService _customerService;
     public HubSpotIntegrationService(
         HttpClient httpClient,
         ILogger<HubSpotIntegrationService> logger,
-        IApplicationDbContext context)
+        IApplicationDbContext context,
+         ICustomerAggregationService customerService)
     {
         _httpClient = httpClient;
         _logger = logger;
         _context = context;
+        _customerService = customerService;
     }
 
     public IntegrationType Type => IntegrationType.HubSpot;
@@ -105,7 +108,7 @@ public class HubSpotIntegrationService : IIntegrationService
                     {
                         // Create new customer
                         customer.CompanyId = integration.CompanyId;
-                        customer.Source = "hubspot";
+                        customer. = "hubspot";
                         customer.LastSyncedAt = DateTime.UtcNow;
 
                         _context.Customers.Add(customer);

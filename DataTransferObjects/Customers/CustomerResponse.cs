@@ -7,8 +7,9 @@ using System.Threading.Tasks;
 
 namespace DataTransferObjects.Customers
 {
-    public  class CustomerResponse
+    public sealed class CustomerResponse
     {
+        // Core customer info
         public Guid Id { get; set; }
         public string FirstName { get; set; } = string.Empty;
         public string LastName { get; set; } = string.Empty;
@@ -16,39 +17,31 @@ namespace DataTransferObjects.Customers
         public string? Phone { get; set; }
         public string? CompanyName { get; set; }
         public string? JobTitle { get; set; }
+        public string? Location { get; set; }
+        public string? Country { get; set; }
 
-        // Subscription details
-        public SubscriptionStatus SubscriptionStatus { get; set; }
-        public SubscriptionPlan Plan { get; set; }
-        public decimal MonthlyRecurringRevenue { get; set; }
-        public decimal LifetimeValue { get; set; }
-        public DateTime? SubscriptionStartDate { get; set; }
-        public DateTime? SubscriptionEndDate { get; set; }
-
-        // Engagement metrics
-        public DateTime? LastLoginDate { get; set; }
-        public int WeeklyLoginFrequency { get; set; }
-        public decimal FeatureUsagePercentage { get; set; }
-        public int SupportTicketCount { get; set; }
-
-        // Churn prediction
+        // Aggregated churn info
         public decimal ChurnRiskScore { get; set; }
         public ChurnRiskLevel ChurnRiskLevel { get; set; }
         public DateTime? ChurnPredictionDate { get; set; }
 
-        // Payment information
-        public PaymentStatus PaymentStatus { get; set; }
-        public DateTime? LastPaymentDate { get; set; }
-        public DateTime? NextBillingDate { get; set; }
-        public int PaymentFailureCount { get; set; }
+        // CRM data (if available)
+        public List<CustomerCrmInfo>? CrmInfo { get; set; }
 
-        // Demographics
-        public string? Location { get; set; }
-        public string? Country { get; set; }
+        // Payment data (if available)
+        public List<CustomerPaymentInfo>? PaymentInfo { get; set; }
 
-        // Metadata
-        public string Source { get; set; } = string.Empty;
-        public DateTime LastSyncedAt { get; set; }
+        // Marketing data (if available)
+        public List<CustomerMarketingInfo>? MarketingInfo { get; set; }
+
+        // Support data (if available)
+        public List<CustomerSupportInfo>? SupportInfo { get; set; }
+
+        // Engagement data (if available)
+        public List<CustomerEngagementInfo>? EngagementInfo { get; set; }
+
         public DateTime DateCreated { get; set; }
+        public DateTime LastSyncedAt { get; set; }
     }
+
 }

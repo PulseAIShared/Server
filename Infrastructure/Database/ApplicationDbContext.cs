@@ -33,6 +33,12 @@ public sealed class ApplicationDbContext(
     public DbSet<Customer> Customers { get; set; } = null!;
     public DbSet<CustomerActivity> CustomerActivities { get; set; } = null!;
     public DbSet<ChurnPrediction> ChurnPredictions { get; set; } = null!;
+    public DbSet<CustomerCrmData> CustomerCrmData { get; set; }
+    public DbSet<CustomerPaymentData> CustomerPaymentData { get; set; }
+    public DbSet<CustomerMarketingData> CustomerMarketingData { get; set; }
+    public DbSet<CustomerSupportData> CustomerSupportData { get; set; }
+    public DbSet<CustomerEngagementData> CustomerEngagementData { get; set; }
+
 
     // Segmentation
     public DbSet<CustomerSegment> CustomerSegments { get; set; } = null!;
