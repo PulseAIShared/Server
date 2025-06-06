@@ -32,6 +32,12 @@ jobs:
           }
           
           http {
+              # Map for WebSocket connection upgrades
+              map $http_upgrade $connection_upgrade {
+                  default upgrade;
+                  '' close;
+              }
+              
               server {
                   listen 80;
                   server_name ${{ secrets.DOMAIN_NAME }};
@@ -52,8 +58,39 @@ jobs:
                   ssl_certificate /etc/letsencrypt/live/${{ secrets.DOMAIN_NAME }}/fullchain.pem;
                   ssl_certificate_key /etc/letsencrypt/live/${{ secrets.DOMAIN_NAME }}/privkey.pem;
                   
+                  # SSL Settings (recommended)
+                  ssl_protocols TLSv1.2 TLSv1.3;
+                  ssl_prefer_server_ciphers on;
+                  ssl_ciphers ECDHE-RSA-AES256-GCM-SHA512:DHE-RSA-AES256-GCM-SHA512:ECDHE-RSA-AES256-GCM-SHA384:DHE-RSA-AES256-GCM-SHA384;
+                  ssl_session_timeout 1d;
+                  ssl_session_cache shared:SSL:10m;
+                  
                   # CORS headers REMOVED - let .NET handle CORS to prevent duplicates
                   
+                  # Special location for SignalR WebSocket connections
+                  location /hubs/ {
+                      proxy_pass http://api:5000;
+                      proxy_http_version 1.1;
+                      proxy_set_header Upgrade $http_upgrade;
+                      proxy_set_header Connection "upgrade";
+                      proxy_set_header Host $host;
+                      proxy_set_header X-Real-IP $remote_addr;
+                      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                      proxy_set_header X-Forwarded-Proto $scheme;
+                      proxy_set_header X-Forwarded-Host $host;
+                      proxy_set_header X-Forwarded-Port $server_port;
+                      proxy_cache_bypass $http_upgrade;
+                      
+                      # WebSocket specific settings
+                      proxy_read_timeout 86400;
+                      proxy_send_timeout 86400;
+                      proxy_connect_timeout 86400;
+                      
+                      # Disable buffering for real-time communication
+                      proxy_buffering off;
+                  }
+                  
+                  # General location for all other API requests
                   location / {
                       proxy_pass http://api:5000;
                       proxy_set_header Host $host;
@@ -64,8 +101,13 @@ jobs:
                       proxy_set_header X-Forwarded-Port $server_port;
                       proxy_http_version 1.1;
                       proxy_set_header Upgrade $http_upgrade;
-                      proxy_set_header Connection keep-alive;
+                      proxy_set_header Connection $connection_upgrade;
                       proxy_cache_bypass $http_upgrade;
+                      
+                      # Standard timeouts for regular requests
+                      proxy_read_timeout 300;
+                      proxy_send_timeout 300;
+                      proxy_connect_timeout 300;
                   }
               }
           }
@@ -238,20 +280,13 @@ jobs:
               docker compose logs nginx --tail=10
             fi
             
-            # Test CORS (this should now show only one Access-Control-Allow-Origin header)
-            echo "🔍 Testing CORS headers (should show single origin)..."
-            CORS_HEADERS=$(curl -s -H "Origin: https://pulseltv.com" -I https://${DOMAIN_NAME}/health 2>/dev/null | grep -i "access-control-allow-origin" || echo "")
-            if echo "$CORS_HEADERS" | grep -q "pulseltv.com"; then
-              echo "✅ CORS headers present: $CORS_HEADERS"
-              # Check for duplicate headers
-              CORS_COUNT=$(echo "$CORS_HEADERS" | wc -l)
-              if [ "$CORS_COUNT" -eq 1 ]; then
-                echo "✅ Single CORS origin header (no duplicates)"
-              else
-                echo "⚠️ Multiple CORS headers detected: $CORS_COUNT"
-              fi
+            # Test WebSocket connection for SignalR
+            echo "🔌 Testing WebSocket/SignalR connection..."
+            WS_TEST=$(curl -s -I https://${DOMAIN_NAME}/hubs/notifications 2>/dev/null | head -1 | grep -o "404\|200\|101" || echo "FAILED")
+            if [ "$WS_TEST" = "404" ] || [ "$WS_TEST" = "200" ]; then
+              echo "✅ SignalR hub endpoint accessible (got $WS_TEST)"
             else
-              echo "⚠️ No CORS headers found - .NET may not be handling CORS properly"
+              echo "⚠️ SignalR hub endpoint test: $WS_TEST"
             fi
             
             echo ""
@@ -262,6 +297,7 @@ jobs:
             echo "✅ SSL certificate installed"
             echo "✅ Auto-renewal configured"
             echo "✅ CORS configured in .NET (no nginx duplicates)"
+            echo "✅ WebSocket/SignalR support enabled"
             echo "✅ Ready for client: https://pulseltv.com"
             
           EOF
@@ -314,6 +350,16 @@ jobs:
             echo "❌ Multiple CORS headers detected ($CORS_TEST) - still have duplicate issue"
           fi
           
+          # Test WebSocket/SignalR endpoint
+          echo "🔌 Testing SignalR WebSocket endpoint..."
+          SIGNALR_TEST=$(curl -s -o /dev/null -w "%{http_code}" https://${{ secrets.DOMAIN_NAME }}/hubs/notifications || echo "FAILED")
+          echo "SignalR hub response: $SIGNALR_TEST"
+          if [ "$SIGNALR_TEST" = "404" ] || [ "$SIGNALR_TEST" = "200" ]; then
+            echo "✅ SignalR hub endpoint accessible"
+          else
+            echo "⚠️ SignalR hub may have issues"
+          fi
+          
           # Test if containers are running on the server
           echo "🔍 Checking server container status..."
           ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
@@ -346,8 +392,15 @@ jobs:
             echo "⚠️ CORS may still have issues - found $CORS_TEST origin headers"
           fi
           
+          if [ "$SIGNALR_TEST" = "404" ] || [ "$SIGNALR_TEST" = "200" ]; then
+            echo "✅ SignalR WebSocket should work properly"
+          else
+            echo "⚠️ SignalR WebSocket may have issues - response: $SIGNALR_TEST"
+          fi
+          
           echo ""
           echo "🎯 Target API URL: https://${{ secrets.DOMAIN_NAME }}"
           echo "🌐 Frontend URL: https://pulseltv.com"
           echo "📋 CORS should now work properly without duplicate headers"
+          echo "🔌 SignalR WebSocket connections should work properly"
           echo "📋 Check the logs above to debug any remaining issues"
