@@ -23,7 +23,7 @@ jobs:
           username: ${{ secrets.DOCKER_HUB_USERNAME }}
           password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
       
-      # Step 4: Create nginx configuration (WORKING VERSION)
+      # Step 4: Create nginx configuration (FIXED - CORS headers removed)
       - name: Create nginx configuration
         run: |
           cat > nginx.conf << 'EOL'
@@ -52,10 +52,7 @@ jobs:
                   ssl_certificate /etc/letsencrypt/live/${{ secrets.DOMAIN_NAME }}/fullchain.pem;
                   ssl_certificate_key /etc/letsencrypt/live/${{ secrets.DOMAIN_NAME }}/privkey.pem;
                   
-                  add_header Access-Control-Allow-Origin "https://pulseltv.com" always;
-                  add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS" always;
-                  add_header Access-Control-Allow-Headers "Origin, X-Requested-With, Content-Type, Accept, Authorization" always;
-                  add_header Access-Control-Allow-Credentials "true" always;
+                  # CORS headers REMOVED - let .NET handle CORS to prevent duplicates
                   
                   location / {
                       proxy_pass http://api:5000;
@@ -63,6 +60,12 @@ jobs:
                       proxy_set_header X-Real-IP $remote_addr;
                       proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
                       proxy_set_header X-Forwarded-Proto $scheme;
+                      proxy_set_header X-Forwarded-Host $host;
+                      proxy_set_header X-Forwarded-Port $server_port;
+                      proxy_http_version 1.1;
+                      proxy_set_header Upgrade $http_upgrade;
+                      proxy_set_header Connection keep-alive;
+                      proxy_cache_bypass $http_upgrade;
                   }
               }
           }
@@ -235,13 +238,20 @@ jobs:
               docker compose logs nginx --tail=10
             fi
             
-            # Test CORS
-            echo "🔍 Testing CORS headers..."
-            CORS_TEST=$(curl -s -H "Origin: https://pulseltv.com" -I https://${DOMAIN_NAME}/health | grep -i "access-control-allow-origin" | wc -l)
-            if [ "$CORS_TEST" -eq 1 ]; then
-              echo "✅ CORS headers correct"
+            # Test CORS (this should now show only one Access-Control-Allow-Origin header)
+            echo "🔍 Testing CORS headers (should show single origin)..."
+            CORS_HEADERS=$(curl -s -H "Origin: https://pulseltv.com" -I https://${DOMAIN_NAME}/health 2>/dev/null | grep -i "access-control-allow-origin" || echo "")
+            if echo "$CORS_HEADERS" | grep -q "pulseltv.com"; then
+              echo "✅ CORS headers present: $CORS_HEADERS"
+              # Check for duplicate headers
+              CORS_COUNT=$(echo "$CORS_HEADERS" | wc -l)
+              if [ "$CORS_COUNT" -eq 1 ]; then
+                echo "✅ Single CORS origin header (no duplicates)"
+              else
+                echo "⚠️ Multiple CORS headers detected: $CORS_COUNT"
+              fi
             else
-              echo "⚠️ CORS headers: $CORS_TEST (should be 1)"
+              echo "⚠️ No CORS headers found - .NET may not be handling CORS properly"
             fi
             
             echo ""
@@ -251,6 +261,7 @@ jobs:
             echo "✅ Health check: https://${DOMAIN_NAME}/health"
             echo "✅ SSL certificate installed"
             echo "✅ Auto-renewal configured"
+            echo "✅ CORS configured in .NET (no nginx duplicates)"
             echo "✅ Ready for client: https://pulseltv.com"
             
           EOF
@@ -287,6 +298,22 @@ jobs:
           echo "🔍 Detailed HTTPS test..."
           curl -v -s https://${{ secrets.DOMAIN_NAME }}/health || echo "Detailed HTTPS test failed"
           
+          # Test CORS specifically (this is the key fix)
+          echo "🔍 Testing CORS headers for duplicate origin issue..."
+          CORS_TEST=$(curl -s -H "Origin: https://pulseltv.com" -I https://${{ secrets.DOMAIN_NAME }}/health 2>/dev/null | grep -i "access-control-allow-origin" | wc -l || echo "0")
+          CORS_CONTENT=$(curl -s -H "Origin: https://pulseltv.com" -I https://${{ secrets.DOMAIN_NAME }}/health 2>/dev/null | grep -i "access-control-allow-origin" || echo "No CORS headers")
+          
+          echo "CORS header count: $CORS_TEST"
+          echo "CORS header content: $CORS_CONTENT"
+          
+          if [ "$CORS_TEST" -eq 1 ]; then
+            echo "✅ CORS configuration correct (single origin header)"
+          elif [ "$CORS_TEST" -eq 0 ]; then
+            echo "⚠️ No CORS headers found - check .NET CORS configuration"
+          else
+            echo "❌ Multiple CORS headers detected ($CORS_TEST) - still have duplicate issue"
+          fi
+          
           # Test if containers are running on the server
           echo "🔍 Checking server container status..."
           ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
@@ -313,15 +340,14 @@ jobs:
             echo "Check the logs above for more details"
           fi
           
-          # Test CORS
-          echo "🔍 Testing CORS headers..."
-          CORS_HEADERS=$(curl -s -H "Origin: https://pulseltv.com" -I https://${{ secrets.DOMAIN_NAME }}/health | grep -i "access-control-allow-origin" | wc -l || echo "0")
-          if [ "$CORS_HEADERS" -eq 1 ]; then
-            echo "✅ CORS configuration correct"
+          if [ "$CORS_TEST" -eq 1 ]; then
+            echo "✅ CORS issue should be resolved - single origin header detected"
           else
-            echo "⚠️ CORS may have issues - found $CORS_HEADERS origin headers"
+            echo "⚠️ CORS may still have issues - found $CORS_TEST origin headers"
           fi
           
           echo ""
           echo "🎯 Target API URL: https://${{ secrets.DOMAIN_NAME }}"
-          echo "📋 Check the logs above to debug any issues"
+          echo "🌐 Frontend URL: https://pulseltv.com"
+          echo "📋 CORS should now work properly without duplicate headers"
+          echo "📋 Check the logs above to debug any remaining issues"
