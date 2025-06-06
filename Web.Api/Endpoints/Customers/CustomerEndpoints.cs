@@ -39,8 +39,8 @@ internal sealed class CustomerEndpoints : IEndpoint
             .WithName("GetCustomerActivities")
             .WithSummary("Get activities for a specific customer");
 
-        group.MapDelete("", DeleteCustomers)
-            .WithName("DeleteCustomers")
+        group.MapPost("delete", DeleteCustomers)
+             .WithName("DeleteCustomers")
             .WithSummary("Delete multiple customers and all their data");
     }
 
