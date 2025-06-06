@@ -96,4 +96,6 @@ namespace DataTransferObjects.Customers
         public bool HasSupportData => SupportSourceCount > 0;
         public bool HasEngagementData => EngagementSourceCount > 0;
     }
+
+
 }

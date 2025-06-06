@@ -11,16 +11,20 @@ using System.Text.Json;
 using System.Threading.Tasks;
 using Domain.Notification;
 using Application.Services;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 
 namespace Application.Imports.Events
 {
     internal sealed class ImportJobCompletedDomainEventHandler(
         IApplicationDbContext context,
-        INotificationService notificationService)
+        INotificationService notificationService,
+        ILogger<ImportJobCompletedDomainEventHandler> logger)
         : IDomainEventHandler<ImportJobCompletedDomainEvent>
     {
         public async Task Handle(ImportJobCompletedDomainEvent domainEvent, CancellationToken cancellationToken)
         {
+   
             // Create in-app notification for the notification inbox
             await CreateInAppNotification(domainEvent, cancellationToken);
 

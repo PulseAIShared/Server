@@ -7,6 +7,7 @@ using Domain.Segments;
 using Domain.Todos;
 using Domain.Users;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.ChangeTracking;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 
 namespace Application.Abstractions.Data;
@@ -30,5 +31,7 @@ public interface IApplicationDbContext
     DbSet<CompanyInvitation> CompanyInvitations { get; }
     DbSet<Integration> Integrations { get; }
     DatabaseFacade Database { get; }
+
+    ChangeTracker ChangeTracker { get; }
     Task<int> SaveChangesAsync(CancellationToken cancellationToken = default);
 }

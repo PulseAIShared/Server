@@ -58,13 +58,91 @@ namespace Application.Services
 
             return await MapToUnifiedResponse(customer);
         }
+        private static bool IsComprehensiveSource(string sourceName)
+        {
+            var comprehensiveSources = new[]
+            {
+        "manual_import",
+        "csv_import",
+        "data_migration",
+        "bulk_import",
+        "api_import"
+    };
+
+
+
+            return comprehensiveSources.Any(cs => sourceName.ToLower().Contains(cs));
+        }
+
+        private List<string> DetermineApplicableDataTypes(string sourceName, Dictionary<string, object> sourceData, bool isComprehensiveSource)
+        {
+            var applicableTypes = new List<string>();
+
+            if (isComprehensiveSource)
+            {
+                // For comprehensive sources, check all types
+                applicableTypes.AddRange(new[] { "crm", "payment", "marketing", "support", "engagement" });
+            }
+            else
+            {
+                // For specific sources, determine primary type but also check for cross-over data
+                var primaryType = DetermineDataType(sourceName, sourceData);
+                applicableTypes.Add(primaryType);
+
+                // Check if this specialized source also has data for other types
+                if (primaryType != "crm" && HasCrmData(sourceData))
+                    applicableTypes.Add("crm");
+                if (primaryType != "payment" && HasPaymentData(sourceData))
+                    applicableTypes.Add("payment");
+                if (primaryType != "marketing" && HasMarketingData(sourceData))
+                    applicableTypes.Add("marketing");
+                if (primaryType != "support" && HasSupportData(sourceData))
+                    applicableTypes.Add("support");
+                if (primaryType != "engagement" && HasEngagementData(sourceData))
+                    applicableTypes.Add("engagement");
+            }
+
+            return applicableTypes.Distinct().ToList();
+        }
+
+
+        private static bool HasCrmData(Dictionary<string, object> sourceData)
+        {
+            var crmFields = new[]
+            {
+        "lead_source", "lifecycle_stage", "lifecyclestage", "sales_owner", "sales_owner_name",
+        "sales_owner_id", "deal_count", "total_deal_value", "won_deal_value", "pipeline_stage",
+        "lead_status", "qualification_status", "last_activity_date", "first_contact_date",
+        "last_contact_date", "lead_score", "account_id", "opportunity_stage"
+    };
+
+            return crmFields.Any(field => sourceData.ContainsKey(field) &&
+                                       !string.IsNullOrEmpty(sourceData[field]?.ToString()));
+        }
+
+        private static bool HasPaymentData(Dictionary<string, object> sourceData)
+        {
+            var paymentFields = new[]
+            {
+        "subscription_status", "plan", "subscription_plan", "mrr", "monthly_revenue",
+        "monthly_recurring_revenue", "lifetime_value", "ltv", "subscription_start_date",
+        "subscription_end_date", "payment_status", "payment_method", "last_payment_date",
+        "next_billing_date", "payment_failures", "payment_failure_count", "billing_cycle",
+        "trial_start_date", "trial_end_date", "current_balance", "past_due_amount"
+    };
+
+            return paymentFields.Any(field => sourceData.ContainsKey(field) &&
+                                           sourceData[field] != null &&
+                                           !string.IsNullOrEmpty(sourceData[field]?.ToString()));
+        }
+
 
         public async Task<Customer> AddOrUpdateCustomerDataAsync(
-            Guid customerId,
-            Dictionary<string, object> sourceData,
-            string sourceName,
-            string? importBatchId = null,
-            Guid? importedByUserId = null)
+                    Guid customerId,
+                    Dictionary<string, object> sourceData,
+                    string sourceName,
+                    string? importBatchId = null,
+                    Guid? importedByUserId = null)
         {
             var customer = await _context.Customers
                 .Include(c => c.CrmDataSources)
@@ -77,29 +155,70 @@ namespace Application.Services
             if (customer == null)
                 throw new ArgumentException($"Customer {customerId} not found");
 
-            // Determine data type based on source or data content
-            var dataType = DetermineDataType(sourceName, sourceData);
+            // For manual imports or comprehensive sources, check ALL data types
+            var sourcePriority = _sourcePriorities.GetValueOrDefault(sourceName, 10);
+            var isComprehensiveSource = IsComprehensiveSource(sourceName);
 
-            switch (dataType.ToLower())
+            // Always try to extract and store data for all applicable types
+            var applicableDataTypes = DetermineApplicableDataTypes(sourceName, sourceData, isComprehensiveSource);
+
+            _logger.LogDebug("Processing source {SourceName} with applicable data types: {DataTypes}",
+                sourceName, string.Join(", ", applicableDataTypes));
+
+            // Process each applicable data type
+            foreach (var dataType in applicableDataTypes)
             {
-                case "crm":
-                    await AddOrUpdateCrmDataAsync(customer, sourceData, sourceName, importBatchId, importedByUserId);
-                    break;
-                case "payment":
-                    await AddOrUpdatePaymentDataAsync(customer, sourceData, sourceName, importBatchId, importedByUserId);
-                    break;
-                case "marketing":
-                    await AddOrUpdateMarketingDataAsync(customer, sourceData, sourceName, importBatchId, importedByUserId);
-                    break;
-                case "support":
-                    await AddOrUpdateSupportDataAsync(customer, sourceData, sourceName, importBatchId, importedByUserId);
-                    break;
-                case "engagement":
-                    await AddOrUpdateEngagementDataAsync(customer, sourceData, sourceName, importBatchId, importedByUserId);
-                    break;
-                default:
-                    _logger.LogWarning("Unknown data type {DataType} for source {SourceName}", dataType, sourceName);
-                    break;
+                try
+                {
+                    switch (dataType.ToLower())
+                    {
+                        case "crm":
+                            if (HasCrmData(sourceData))
+                            {
+                                await AddOrUpdateCrmDataAsync(customer, sourceData, sourceName, importBatchId, importedByUserId);
+                                _logger.LogDebug("Processed CRM data for source {SourceName}", sourceName);
+                            }
+                            break;
+
+                        case "payment":
+                            if (HasPaymentData(sourceData))
+                            {
+                                await AddOrUpdatePaymentDataAsync(customer, sourceData, sourceName, importBatchId, importedByUserId);
+                                _logger.LogDebug("Processed payment data for source {SourceName}", sourceName);
+                            }
+                            break;
+
+                        case "marketing":
+                            if (HasMarketingData(sourceData))
+                            {
+                                await AddOrUpdateMarketingDataAsync(customer, sourceData, sourceName, importBatchId, importedByUserId);
+                                _logger.LogDebug("Processed marketing data for source {SourceName}", sourceName);
+                            }
+                            break;
+
+                        case "support":
+                            if (HasSupportData(sourceData))
+                            {
+                                await AddOrUpdateSupportDataAsync(customer, sourceData, sourceName, importBatchId, importedByUserId);
+                                _logger.LogDebug("Processed support data for source {SourceName}", sourceName);
+                            }
+                            break;
+
+                        case "engagement":
+                            if (HasEngagementData(sourceData))
+                            {
+                                await AddOrUpdateEngagementDataAsync(customer, sourceData, sourceName, importBatchId, importedByUserId);
+                                _logger.LogDebug("Processed engagement data for source {SourceName}", sourceName);
+                            }
+                            break;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to process {DataType} data for source {SourceName}: {Error}",
+                        dataType, sourceName, ex.Message);
+  
+                }
             }
 
             // Update core customer fields using conflict resolution
@@ -110,6 +229,54 @@ namespace Application.Services
 
             await _context.SaveChangesAsync();
             return customer;
+        }
+        private static bool HasMarketingData(Dictionary<string, object> sourceData)
+        {
+            var marketingFields = new[]
+            {
+        "is_subscribed", "subscription_date", "unsubscription_date", "email_marketing_status",
+        "open_rate", "click_rate", "average_open_rate", "average_click_rate", "emails_sent",
+        "emails_opened", "emails_clicked", "campaign_count", "last_email_open_date",
+        "last_email_click_date", "last_campaign_engagement", "marketing_lists", "tags",
+        "segments", "lead_magnet", "utm_source", "utm_campaign", "acquisition_channel"
+    };
+
+            return marketingFields.Any(field => sourceData.ContainsKey(field) &&
+                                             sourceData[field] != null &&
+                                             !string.IsNullOrEmpty(sourceData[field]?.ToString()));
+        }
+
+        private static bool HasSupportData(Dictionary<string, object> sourceData)
+        {
+            var supportFields = new[]
+            {
+        "total_tickets", "open_tickets", "closed_tickets", "support_tickets", "ticket_count",
+        "first_ticket_date", "last_ticket_date", "average_resolution_time", "avg_resolution_time",
+        "customer_satisfaction_score", "csat_score", "nps_score", "support_tier",
+        "escalated_tickets", "high_priority_tickets", "urgent_tickets", "medium_priority_tickets",
+        "low_priority_tickets", "tickets_by_category", "support_agent", "last_support_interaction"
+    };
+
+            return supportFields.Any(field => sourceData.ContainsKey(field) &&
+                                           sourceData[field] != null &&
+                                           !string.IsNullOrEmpty(sourceData[field]?.ToString()));
+        }
+
+        private static bool HasEngagementData(Dictionary<string, object> sourceData)
+        {
+            var engagementFields = new[]
+            {
+        "last_login", "last_login_date", "first_login", "first_login_date", "login_frequency",
+        "weekly_logins", "monthly_logins", "weekly_login_frequency", "monthly_login_frequency",
+        "session_count", "total_sessions", "avg_session_duration", "average_session_duration",
+        "feature_usage", "feature_usage_percentage", "page_views", "bounce_rate",
+        "time_spent", "last_activity", "last_seen", "days_active", "engagement_score",
+        "feature_adoption", "onboarding_completed", "last_feature_usage", "app_opens"
+    };
+
+            return engagementFields.Any(field => sourceData.ContainsKey(field) &&
+                                              sourceData[field] != null &&
+                                              !string.IsNullOrEmpty(sourceData[field]?.ToString()));
         }
 
         public async Task<Customer> SetPrimarySourceAsync(Guid customerId, string dataType, string sourceName)
@@ -378,24 +545,27 @@ namespace Application.Services
         // Private helper methods
 
         private async Task AddOrUpdateCrmDataAsync(
-            Customer customer,
-            Dictionary<string, object> sourceData,
-            string sourceName,
-            string? importBatchId,
-            Guid? importedByUserId)
+      Customer customer,
+      Dictionary<string, object> sourceData,
+      string sourceName,
+      string? importBatchId,
+      Guid? importedByUserId)
         {
             var externalId = sourceData.GetValueOrDefault("id")?.ToString() ??
-                            sourceData.GetValueOrDefault("external_id")?.ToString() ?? "";
+                            sourceData.GetValueOrDefault("external_id")?.ToString() ??
+                            sourceData.GetValueOrDefault("crm_id")?.ToString() ?? "";
 
             // Find existing CRM data for this source
             var existingCrmData = customer.CrmDataSources
                 .FirstOrDefault(c => c.Source == sourceName &&
                     (c.ExternalId == externalId || string.IsNullOrEmpty(externalId)));
 
+            var sourcePriority = _sourcePriorities.GetValueOrDefault(sourceName, 10);
+
             if (existingCrmData != null)
             {
-                // Update existing data
-                UpdateCrmDataFields(existingCrmData, sourceData);
+                // Update existing data with conflict resolution
+                UpdateCrmDataFieldsWithConflictResolution(existingCrmData, sourceData, sourcePriority);
                 existingCrmData.LastSyncedAt = DateTime.UtcNow;
                 existingCrmData.ImportBatchId = importBatchId;
             }
@@ -407,7 +577,7 @@ namespace Application.Services
                     CustomerId = customer.Id,
                     Source = sourceName,
                     ExternalId = externalId,
-                    SourcePriority = _sourcePriorities.GetValueOrDefault(sourceName, 10),
+                    SourcePriority = sourcePriority,
                     ImportBatchId = importBatchId,
                     ImportedByUserId = importedByUserId,
                     LastSyncedAt = DateTime.UtcNow,
@@ -432,12 +602,69 @@ namespace Application.Services
             }
         }
 
+        private void UpdateCrmDataFieldsWithConflictResolution(CustomerCrmData crmData, Dictionary<string, object> sourceData, int sourcePriority)
+        {
+            // Only update fields if they're empty OR if this source has higher priority than a threshold
+            var canOverwrite = sourcePriority > 60; // Configurable threshold
+
+            if (ShouldUpdateFieldValue(crmData.LeadSource, sourceData.GetValueOrDefault("lead_source")?.ToString(), canOverwrite))
+                crmData.LeadSource = sourceData.GetValueOrDefault("lead_source")?.ToString();
+
+            if (ShouldUpdateFieldValue(crmData.LifecycleStage,
+                sourceData.GetValueOrDefault("lifecycle_stage")?.ToString() ?? sourceData.GetValueOrDefault("lifecyclestage")?.ToString(), canOverwrite))
+                crmData.LifecycleStage = sourceData.GetValueOrDefault("lifecycle_stage")?.ToString() ??
+                                         sourceData.GetValueOrDefault("lifecyclestage")?.ToString();
+
+            if (ShouldUpdateFieldValue(crmData.SalesOwnerName, sourceData.GetValueOrDefault("sales_owner_name")?.ToString(), canOverwrite))
+                crmData.SalesOwnerName = sourceData.GetValueOrDefault("sales_owner_name")?.ToString();
+
+            if (ShouldUpdateFieldValue(crmData.LeadStatus, sourceData.GetValueOrDefault("lead_status")?.ToString(), canOverwrite))
+                crmData.LeadStatus = sourceData.GetValueOrDefault("lead_status")?.ToString();
+
+            // For numeric fields, use additive approach or update if higher priority
+            if (sourceData.ContainsKey("deal_count") && int.TryParse(sourceData["deal_count"]?.ToString(), out var dealCount))
+            {
+                if (crmData.DealCount == 0 || canOverwrite)
+                    crmData.DealCount = dealCount;
+            }
+
+            if (sourceData.ContainsKey("total_deal_value") && decimal.TryParse(sourceData["total_deal_value"]?.ToString(), out var totalValue))
+            {
+                if (crmData.TotalDealValue == 0 || canOverwrite)
+                    crmData.TotalDealValue = totalValue;
+            }
+
+            // For dates, always update if we have a value and current is null, or if we can overwrite
+            var lastActivityDate = ParseUtcDateTime(sourceData.GetValueOrDefault("last_activity_date"));
+            if (lastActivityDate.HasValue && (crmData.LastActivityDate == null || canOverwrite))
+                crmData.LastActivityDate = lastActivityDate.Value;
+
+            var firstContactDate = ParseUtcDateTime(sourceData.GetValueOrDefault("first_contact_date"));
+            if (firstContactDate.HasValue && (crmData.FirstContactDate == null || canOverwrite))
+                crmData.FirstContactDate = firstContactDate.Value;
+
+            crmData.LastSyncedAt = DateTime.UtcNow;
+        }
+
+
+        private static bool ShouldUpdateFieldValue(string? currentValue, string? newValue, bool canOverwrite)
+        {
+            // Always update if current is empty and new has value
+            if (string.IsNullOrEmpty(currentValue) && !string.IsNullOrEmpty(newValue))
+                return true;
+
+            // Update if we can overwrite and new value is not empty
+            if (canOverwrite && !string.IsNullOrEmpty(newValue))
+                return true;
+
+            return false;
+        }
         private async Task AddOrUpdatePaymentDataAsync(
-            Customer customer,
-            Dictionary<string, object> sourceData,
-            string sourceName,
-            string? importBatchId,
-            Guid? importedByUserId)
+      Customer customer,
+      Dictionary<string, object> sourceData,
+      string sourceName,
+      string? importBatchId,
+      Guid? importedByUserId)
         {
             var externalId = sourceData.GetValueOrDefault("id")?.ToString() ??
                             sourceData.GetValueOrDefault("external_id")?.ToString() ?? "";
@@ -632,14 +859,11 @@ namespace Application.Services
         }
 
         private async Task UpdateCoreCustomerFieldsWithConflictResolution(
-            Customer customer,
-            Dictionary<string, object> sourceData,
-            string sourceName)
+      Customer customer,
+      Dictionary<string, object> sourceData,
+      string sourceName)
         {
             var sourcePriority = _sourcePriorities.GetValueOrDefault(sourceName, 10);
-
-            // Only update core fields if this source has higher priority than what we currently trust
-            // or if the field is currently empty
 
             if (ShouldUpdateField(customer.FirstName, sourceData.GetValueOrDefault("first_name")?.ToString() ??
                                  sourceData.GetValueOrDefault("firstname")?.ToString(), sourcePriority))
@@ -664,6 +888,7 @@ namespace Application.Services
                 customer.JobTitle = sourceData.GetValueOrDefault("job_title")?.ToString() ??
                                   sourceData.GetValueOrDefault("jobtitle")?.ToString();
 
+            // Always update LastSyncedAt with UTC
             customer.LastSyncedAt = DateTime.UtcNow;
         }
 
@@ -725,11 +950,20 @@ namespace Application.Services
                 crmData.DealCount = dealCount;
             if (sourceData.ContainsKey("total_deal_value") && decimal.TryParse(sourceData["total_deal_value"]?.ToString(), out var totalValue))
                 crmData.TotalDealValue = totalValue;
-            if (sourceData.ContainsKey("last_activity_date") && DateTime.TryParse(sourceData["last_activity_date"]?.ToString(), out var lastActivity))
-                crmData.LastActivityDate = lastActivity;
-            if (sourceData.ContainsKey("first_contact_date") && DateTime.TryParse(sourceData["first_contact_date"]?.ToString(), out var firstContact))
-                crmData.FirstContactDate = firstContact;
+
+            // Fix DateTime handling
+            var lastActivityDate = ParseUtcDateTime(sourceData.GetValueOrDefault("last_activity_date"));
+            if (lastActivityDate.HasValue)
+                crmData.LastActivityDate = lastActivityDate.Value;
+
+            var firstContactDate = ParseUtcDateTime(sourceData.GetValueOrDefault("first_contact_date"));
+            if (firstContactDate.HasValue)
+                crmData.FirstContactDate = firstContactDate.Value;
+
+            // Always update LastSyncedAt with UTC
+            crmData.LastSyncedAt = DateTime.UtcNow;
         }
+
 
         private void UpdatePaymentDataFields(CustomerPaymentData paymentData, Dictionary<string, object> sourceData)
         {
@@ -743,14 +977,32 @@ namespace Application.Services
                 paymentData.MonthlyRecurringRevenue = monthlyRevenue;
             if (sourceData.ContainsKey("lifetime_value") && decimal.TryParse(sourceData["lifetime_value"]?.ToString(), out var ltv))
                 paymentData.LifetimeValue = ltv;
-            if (sourceData.ContainsKey("subscription_start_date") && DateTime.TryParse(sourceData["subscription_start_date"]?.ToString(), out var subStartDate))
-                paymentData.SubscriptionStartDate = subStartDate;
+
+            // Fix DateTime handling
+            var subscriptionStartDate = ParseUtcDateTime(sourceData.GetValueOrDefault("subscription_start_date"));
+            if (subscriptionStartDate.HasValue)
+                paymentData.SubscriptionStartDate = subscriptionStartDate.Value;
+
             if (sourceData.ContainsKey("payment_status") && Enum.TryParse<PaymentStatus>(sourceData["payment_status"]?.ToString(), true, out var payStatus))
                 paymentData.PaymentStatus = payStatus;
-            if (sourceData.ContainsKey("next_billing_date") && DateTime.TryParse(sourceData["next_billing_date"]?.ToString(), out var nextBilling))
-                paymentData.NextBillingDate = nextBilling;
+
+            var nextBillingDate = ParseUtcDateTime(sourceData.GetValueOrDefault("next_billing_date"));
+            if (nextBillingDate.HasValue)
+                paymentData.NextBillingDate = nextBillingDate.Value;
+
+            var lastPaymentDate = ParseUtcDateTime(sourceData.GetValueOrDefault("last_payment_date"));
+            if (lastPaymentDate.HasValue)
+                paymentData.LastPaymentDate = lastPaymentDate.Value;
+
+            var lastPaymentFailureDate = ParseUtcDateTime(sourceData.GetValueOrDefault("last_payment_failure_date"));
+            if (lastPaymentFailureDate.HasValue)
+                paymentData.LastPaymentFailureDate = lastPaymentFailureDate.Value;
+
             if (sourceData.ContainsKey("payment_failures") && int.TryParse(sourceData["payment_failures"]?.ToString(), out var failures))
                 paymentData.PaymentFailureCount = failures;
+
+            // Always update LastSyncedAt with UTC
+            paymentData.LastSyncedAt = DateTime.UtcNow;
         }
 
         private void UpdateMarketingDataFields(CustomerMarketingData marketingData, Dictionary<string, object> sourceData)
@@ -765,7 +1017,32 @@ namespace Application.Services
                 marketingData.TotalEmailsSent = emailsSent;
             if (sourceData.ContainsKey("campaign_count") && int.TryParse(sourceData["campaign_count"]?.ToString(), out var campaignCount))
                 marketingData.CampaignCount = campaignCount;
+
+            // Fix DateTime handling
+            var subscriptionDate = ParseUtcDateTime(sourceData.GetValueOrDefault("subscription_date"));
+            if (subscriptionDate.HasValue)
+                marketingData.SubscriptionDate = subscriptionDate.Value;
+
+            var unsubscriptionDate = ParseUtcDateTime(sourceData.GetValueOrDefault("unsubscription_date"));
+            if (unsubscriptionDate.HasValue)
+                marketingData.UnsubscriptionDate = unsubscriptionDate.Value;
+
+            var lastEmailOpenDate = ParseUtcDateTime(sourceData.GetValueOrDefault("last_email_open_date"));
+            if (lastEmailOpenDate.HasValue)
+                marketingData.LastEmailOpenDate = lastEmailOpenDate.Value;
+
+            var lastEmailClickDate = ParseUtcDateTime(sourceData.GetValueOrDefault("last_email_click_date"));
+            if (lastEmailClickDate.HasValue)
+                marketingData.LastEmailClickDate = lastEmailClickDate.Value;
+
+            var lastCampaignEngagement = ParseUtcDateTime(sourceData.GetValueOrDefault("last_campaign_engagement"));
+            if (lastCampaignEngagement.HasValue)
+                marketingData.LastCampaignEngagement = lastCampaignEngagement.Value;
+
+            // Always update LastSyncedAt with UTC
+            marketingData.LastSyncedAt = DateTime.UtcNow;
         }
+
 
         private void UpdateSupportDataFields(CustomerSupportData supportData, Dictionary<string, object> sourceData)
         {
@@ -777,12 +1054,23 @@ namespace Application.Services
                 supportData.CustomerSatisfactionScore = csatScore;
             if (sourceData.ContainsKey("avg_resolution_time") && double.TryParse(sourceData["avg_resolution_time"]?.ToString(), out var avgResTime))
                 supportData.AverageResolutionTime = avgResTime;
+
+            // Fix DateTime handling
+            var firstTicketDate = ParseUtcDateTime(sourceData.GetValueOrDefault("first_ticket_date"));
+            if (firstTicketDate.HasValue)
+                supportData.FirstTicketDate = firstTicketDate.Value;
+
+            var lastTicketDate = ParseUtcDateTime(sourceData.GetValueOrDefault("last_ticket_date"));
+            if (lastTicketDate.HasValue)
+                supportData.LastTicketDate = lastTicketDate.Value;
+
+            // Always update LastSyncedAt with UTC
+            supportData.LastSyncedAt = DateTime.UtcNow;
         }
 
+        // Fixed UpdateEngagementDataFields method
         private void UpdateEngagementDataFields(CustomerEngagementData engagementData, Dictionary<string, object> sourceData)
         {
-            if (sourceData.ContainsKey("last_login") && DateTime.TryParse(sourceData["last_login"]?.ToString(), out var lastLogin))
-                engagementData.LastLoginDate = lastLogin;
             if (sourceData.ContainsKey("weekly_logins") && int.TryParse(sourceData["weekly_logins"]?.ToString(), out var weeklyLogins))
                 engagementData.WeeklyLoginFrequency = weeklyLogins;
             if (sourceData.ContainsKey("feature_usage") && decimal.TryParse(sourceData["feature_usage"]?.ToString(), out var featureUsage))
@@ -791,6 +1079,22 @@ namespace Application.Services
                 engagementData.TotalSessions = sessionCount;
             if (sourceData.ContainsKey("avg_session_duration") && double.TryParse(sourceData["avg_session_duration"]?.ToString(), out var avgSessionDuration))
                 engagementData.AverageSessionDuration = avgSessionDuration;
+
+            // Fix DateTime handling
+            var lastLogin = ParseUtcDateTime(sourceData.GetValueOrDefault("last_login"));
+            if (lastLogin.HasValue)
+                engagementData.LastLoginDate = lastLogin.Value;
+
+            var firstLogin = ParseUtcDateTime(sourceData.GetValueOrDefault("first_login"));
+            if (firstLogin.HasValue)
+                engagementData.FirstLoginDate = firstLogin.Value;
+
+            var lastFeatureUsage = ParseUtcDateTime(sourceData.GetValueOrDefault("last_feature_usage"));
+            if (lastFeatureUsage.HasValue)
+                engagementData.LastFeatureUsage = lastFeatureUsage.Value;
+
+            // Always update LastSyncedAt with UTC
+            engagementData.LastSyncedAt = DateTime.UtcNow;
         }
 
         private async Task<CustomerResponse> MapToUnifiedResponse(Customer customer)
@@ -961,6 +1265,30 @@ namespace Application.Services
                 risk += 0.3m;
 
             return Math.Min(1.0m, risk);
+        }
+
+        private static DateTime EnsureUtc(DateTime dateTime)
+        {
+            return dateTime.Kind switch
+            {
+                DateTimeKind.Utc => dateTime,
+                DateTimeKind.Local => dateTime.ToUniversalTime(),
+                DateTimeKind.Unspecified => DateTime.SpecifyKind(dateTime, DateTimeKind.Utc),
+                _ => DateTime.SpecifyKind(dateTime, DateTimeKind.Utc)
+            };
+        }
+
+  
+        private static DateTime? ParseUtcDateTime(object? value)
+        {
+            if (value == null) return null;
+
+            if (DateTime.TryParse(value.ToString(), out var parsedDate))
+            {
+                return EnsureUtc(parsedDate);
+            }
+
+            return null;
         }
     }
 }

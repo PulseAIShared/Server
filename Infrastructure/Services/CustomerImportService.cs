@@ -35,7 +35,7 @@ public class CustomerImportService : ICustomerImportService
         _logger = logger;
     }
 
-    // Fixed ProcessImportFileAsync method with proper error handling using fresh context
+    [AutomaticRetry(Attempts = 0)]
     public async Task ProcessImportFileAsync(Guid jobId)
     {
         using var scope = _serviceProvider.CreateScope();
@@ -48,6 +48,19 @@ public class CustomerImportService : ICustomerImportService
             _logger.LogWarning("Import job {JobId} not found for processing", jobId);
             return;
         }
+
+        var result = new ImportJobResult
+        {
+            TotalRecords = 0,
+            ProcessedRecords = 0,
+            SuccessfulRecords = 0,
+            FailedRecords = 0,
+            SkippedRecords = 0,
+            UpdatedRecords = 0,
+            NewRecords = 0,
+            Errors = new List<ImportError>(),
+            Updates = new List<ImportUpdate>()
+        };
 
         try
         {
@@ -66,18 +79,7 @@ public class CustomerImportService : ICustomerImportService
             var fileContent = await _fileStorageService.ReadFileAsync(job.FilePath);
             var (customers, totalRecords, _) = ParseCsvFile(fileContent, job.ImportSource!);
 
-            var result = new ImportJobResult
-            {
-                TotalRecords = totalRecords,
-                ProcessedRecords = 0,
-                SuccessfulRecords = 0,
-                FailedRecords = 0,
-                SkippedRecords = 0,
-                UpdatedRecords = 0,
-                NewRecords = 0,
-                Errors = new List<ImportError>(),
-                Updates = new List<ImportUpdate>()
-            };
+            result.TotalRecords = totalRecords;
 
             // Get existing customers for duplicate checking
             var emails = customers.Select(c => c.Email.ToLower()).ToList();
@@ -111,8 +113,8 @@ public class CustomerImportService : ICustomerImportService
 
                     await context.SaveChangesAsync();
 
-                    _logger.LogDebug("Import job {JobId} progress: {ProcessedRecords}/{TotalRecords} ({ProgressPercentage:F1}%) - New: {NewRecords}, Updated: {UpdatedRecords}, Skipped: {SkippedRecords}",
-                        jobId, job.ProcessedRecords, job.TotalRecords, job.GetProgressPercentage(), result.NewRecords, result.UpdatedRecords, result.SkippedRecords);
+                    _logger.LogDebug("Import job {JobId} progress: {ProcessedRecords}/{TotalRecords} ({ProgressPercentage:F1}%) - New: {NewRecords}, Updated: {UpdatedRecords}, Skipped: {SkippedRecords}, Failed: {FailedRecords}",
+                        jobId, job.ProcessedRecords, job.TotalRecords, job.GetProgressPercentage(), result.NewRecords, result.UpdatedRecords, result.SkippedRecords, result.FailedRecords);
                 }
             }
 
@@ -123,13 +125,41 @@ public class CustomerImportService : ICustomerImportService
 
             result.Summary = CalculateInsights(importedCustomers);
 
-            job.Complete(result);
+            // Determine final status
+            ImportJobStatus finalStatus;
+            string? errorMessage = null;
 
-            // Raise domain event for completed import
+            if (result.FailedRecords == result.TotalRecords)
+            {
+                // All records failed
+                finalStatus = ImportJobStatus.Failed;
+                errorMessage = $"All {result.FailedRecords} records failed to import";
+            }
+            else if (result.FailedRecords > 0)
+            {
+                // Partial success - complete but with errors
+                finalStatus = ImportJobStatus.Completed;
+                _logger.LogWarning("Import job {JobId} completed with {FailedRecords} failures out of {TotalRecords} total records",
+                    jobId, result.FailedRecords, result.TotalRecords);
+            }
+            else
+            {
+                // Complete success
+                finalStatus = ImportJobStatus.Completed;
+            }
+
+            // Update job with final results
+            job.Complete(result);
+            if (errorMessage != null)
+            {
+                job.ErrorMessage = errorMessage;
+            }
+
+            // Always raise completion event (regardless of failures)
             job.Raise(new ImportJobCompletedDomainEvent(
-                job.Id, job.UserId, ImportJobStatus.Completed,
+                job.Id, job.UserId, finalStatus,
                 result.TotalRecords, result.SuccessfulRecords, result.FailedRecords, result.SkippedRecords,
-                null, new ImportSummary(result.Summary.AverageRevenue, result.Summary.AverageTenureMonths,
+                errorMessage, new ImportSummary(result.Summary.AverageRevenue, result.Summary.AverageTenureMonths,
                     result.Summary.NewCustomers, result.Summary.HighRiskCustomers)));
 
             await context.SaveChangesAsync();
@@ -145,21 +175,19 @@ public class CustomerImportService : ICustomerImportService
                 _logger.LogWarning(ex, "Failed to delete import file {FilePath} for job {JobId}", job.FilePath, jobId);
             }
 
-            _logger.LogInformation("Import job {JobId} completed successfully. " +
-                "{NewRecords} new records, {UpdatedRecords} updated, {FailedRecords} failed, {SkippedRecords} skipped",
-                jobId, result.NewRecords, result.UpdatedRecords, result.FailedRecords, result.SkippedRecords);
+            _logger.LogInformation("Import job {JobId} completed. Status: {Status}, " +
+                "Total: {TotalRecords}, Successful: {SuccessfulRecords}, Failed: {FailedRecords}, " +
+                "New: {NewRecords}, Updated: {UpdatedRecords}, Skipped: {SkippedRecords}",
+                jobId, finalStatus, result.TotalRecords, result.SuccessfulRecords, result.FailedRecords,
+                result.NewRecords, result.UpdatedRecords, result.SkippedRecords);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to process import file for job {JobId}. Error: {Error}", jobId, ex.Message);
+            // Get the actual root cause error message
+            var rootCause = GetRootCauseError(ex);
+            var errorMessage = $"Import failed: {rootCause}";
 
-            // Log inner exceptions
-            var innerEx = ex.InnerException;
-            while (innerEx != null)
-            {
-                _logger.LogError("Inner exception: {InnerError}", innerEx.Message);
-                innerEx = innerEx.InnerException;
-            }
+            _logger.LogError(ex, "Failed to process import file for job {JobId}. Root cause: {RootCause}", jobId, rootCause);
 
             // Use a FRESH context to update the job status to avoid the same error
             try
@@ -171,40 +199,59 @@ public class CustomerImportService : ICustomerImportService
                 var freshJob = await freshContext.ImportJobs.FindAsync(jobId);
                 if (freshJob != null)
                 {
-                    // Update the job status to failed
-                    freshJob.Fail($"Import failed: {ex.Message}");
+                    // Update the job with current progress and mark as failed
+                    freshJob.TotalRecords = result.TotalRecords;
+                    freshJob.ProcessedRecords = result.ProcessedRecords;
+                    freshJob.SuccessfulRecords = result.SuccessfulRecords;
+                    freshJob.FailedRecords = result.FailedRecords;
+                    freshJob.SkippedRecords = result.SkippedRecords;
+                    freshJob.UpdatedRecords = result.UpdatedRecords;
+                    freshJob.NewRecords = result.NewRecords;
+                    freshJob.Fail(errorMessage);
 
-                    // Raise failure event
+                    // Raise failure event with current progress
                     freshJob.Raise(new ImportJobCompletedDomainEvent(
                         freshJob.Id, freshJob.UserId, ImportJobStatus.Failed,
-                        freshJob.TotalRecords, freshJob.SuccessfulRecords, freshJob.FailedRecords, freshJob.SkippedRecords,
-                        ex.Message, null));
+                        result.TotalRecords, result.SuccessfulRecords, result.FailedRecords, result.SkippedRecords,
+                        errorMessage, null));
 
                     await freshContext.SaveChangesAsync();
 
-                    _logger.LogInformation("Successfully updated import job {JobId} status to Failed using fresh context", jobId);
-                }
-                else
-                {
-                    _logger.LogError("Could not find import job {JobId} in fresh context to update status", jobId);
+                    _logger.LogInformation("Successfully updated import job {JobId} status to Failed using fresh context. Failed: {FailedRecords}, Successful: {SuccessfulRecords}",
+                        jobId, result.FailedRecords, result.SuccessfulRecords);
                 }
             }
             catch (Exception saveEx)
             {
-                _logger.LogError(saveEx, "Failed to update job status to failed for job {JobId} even with fresh context. Error: {SaveError}",
-                    jobId, saveEx.Message);
+                _logger.LogError(saveEx, "Failed to update job status to failed for job {JobId} even with fresh context", jobId);
 
-                // Try direct SQL update as last resort
+                // Try direct SQL update as last resort with the actual error and progress
                 try
                 {
                     using var directScope = _serviceProvider.CreateScope();
                     var directContext = directScope.ServiceProvider.GetRequiredService<IApplicationDbContext>();
 
                     await directContext.Database.ExecuteSqlRawAsync(
-                        "UPDATE import_jobs SET status = {0}, error_message = {1}, completed_at = {2} WHERE id = {3}",
+                        @"UPDATE import_jobs SET 
+                        status = {0}, 
+                        error_message = {1}, 
+                        completed_at = {2},
+                        total_records = {3},
+                        successful_records = {4},
+                        failed_records = {5},
+                        skipped_records = {6},
+                        updated_records = {7},
+                        new_records = {8}
+                      WHERE id = {9}",
                         (int)ImportJobStatus.Failed,
-                        $"Import failed: {ex.Message}",
+                        errorMessage,
                         DateTime.UtcNow,
+                        result.TotalRecords,
+                        result.SuccessfulRecords,
+                        result.FailedRecords,
+                        result.SkippedRecords,
+                        result.UpdatedRecords,
+                        result.NewRecords,
                         jobId);
 
                     _logger.LogInformation("Successfully updated import job {JobId} status to Failed using direct SQL", jobId);
@@ -215,11 +262,38 @@ public class CustomerImportService : ICustomerImportService
                 }
             }
 
-            throw;
+            // Don't re-throw since we don't want Hangfire to retry
+            return;
         }
     }
 
-    // Also fix ValidateImportFileAsync with the same pattern
+    private static string GetRootCauseError(Exception ex)
+    {
+        var currentException = ex;
+        var errorMessages = new List<string>();
+
+        while (currentException != null)
+        {
+            if (!string.IsNullOrEmpty(currentException.Message))
+            {
+                errorMessages.Add(currentException.Message);
+            }
+            currentException = currentException.InnerException;
+        }
+
+        // Return the most specific error message (usually the innermost exception)
+        if (errorMessages.Count > 0)
+        {
+            // For DateTime errors, the innermost exception usually has the specific error
+            var lastMessage = errorMessages.Last();
+
+            return lastMessage;
+        }
+
+        return "Unknown error occurred during import";
+    }
+
+    [AutomaticRetry(Attempts = 0)] // Disable automatic retries
     public async Task ValidateImportFileAsync(Guid jobId, bool skipDuplicates)
     {
         using var scope = _serviceProvider.CreateScope();
